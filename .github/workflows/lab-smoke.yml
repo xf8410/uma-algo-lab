@@ -64,7 +64,7 @@ jobs:
         run: |
           python experiments/compare.py \
             --optimizers "${{ github.event.inputs.optimizers || 'cmaes,cem' }}" \
-            --budget "${{ github.event.inputs.budget || '15' }}" \
+            --budget "${{ github.event.inputs.budget || '16' }}" \
             --uma "${{ github.event.inputs.uma || '111501' }}" \
             --level "${{ github.event.inputs.level || 'smoke' }}" \
             --out results/
