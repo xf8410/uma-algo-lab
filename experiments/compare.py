@@ -17,7 +17,13 @@ sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 
 from lab.genome import decode, genome_to_toml, toml_to_vector
 from lab.space import free_dim
+from lab.evaluator import FAIL_PENALTY, SCREEN_BUILDS, SMOKE_RUNS
 from optimizers import REGISTRY
+
+# 换种子验收（良性判据，用户规则 2026-09-17）：best 基因组用与训练（seed42）无关的
+# 独立种子复评，分数接近才说明改进是泛化的；大幅掉分 = 吃种子噪声/过拟合，剔除。
+VAL_SEEDS = (9001, 9002, 9003)
+VAL_THRESHOLD = 300.0  # |Δ| 超过视为种子敏感（参考阈值，随实测校准）
 
 
 def run_one(name: str, cls, args, center_vec=None) -> dict:
@@ -49,6 +55,25 @@ def run_one(name: str, cls, args, center_vec=None) -> dict:
         if n % 5 == 0 or n == budget:
             print(f"[{name}] eval {n}/{budget} best={best_score:.1f} "
                   f"(cache hit 率见 cache json)", flush=True)
+
+    # 换种子验收：best 基因组用 3 个独立种子复评（不参与搜索、不占预算）。
+    # val_score 接近 best_score → 改进泛化（良性）；大幅掉分 → 种子噪声/过拟合。
+    val_score, val_fail = None, None
+    if best_genome is not None:
+        val_means, val_frs = [], []
+        toml_text = genome_to_toml(best_genome)
+        for s in VAL_SEEDS:
+            m, fr = ev._run_bench(toml_text, s, SMOKE_RUNS, builds=SCREEN_BUILDS)
+            val_means.append(m)
+            val_frs.append(fr)
+        val_score = round(sum(val_means) / len(val_means)
+                          - FAIL_PENALTY * (sum(val_frs) / len(val_frs)), 1)
+        val_fail = round(sum(val_frs) / len(val_frs), 4)
+        delta = round(val_score - best_score, 1)
+        verdict = "良性" if abs(delta) <= VAL_THRESHOLD else "种子敏感"
+        print(f"[{name}] 换种子验收: 训练={best_score:.1f} → 验证={val_score} "
+              f"(Δ={delta:+.1f} {verdict}, seeds={VAL_SEEDS})", flush=True)
+
     out = {
         "optimizer": name, "uma": args.uma, "level": args.level,
         "budget": budget, "evals_done": n,
@@ -56,6 +81,7 @@ def run_one(name: str, cls, args, center_vec=None) -> dict:
         "best_genome": best_genome,
         "best_genome_toml": genome_to_toml(best_genome) if best_genome else None,
         "history": getattr(opt, "history", []),
+        "val_seeds": list(VAL_SEEDS), "val_score": val_score, "val_fail_rate": val_fail,
         "ts": time.strftime("%Y-%m-%d %H:%M:%S"),
     }
     return out
@@ -92,11 +118,16 @@ def main() -> None:
         res = run_one(name, REGISTRY[name], args, center_vec)
         path = outdir / f"{name}_{ts}.json"
         path.write_text(json.dumps(res, ensure_ascii=False, indent=1), encoding="utf-8")
-        summary[name] = res["best_score"]
+        summary[name] = {"best": res["best_score"], "val": res["val_score"]}
         print(f"[{name}] 完成 → {path}  best={res['best_score']}")
-    print("\n==== 赛马小结（同预算 best_score）====")
-    for k, v in sorted(summary.items(), key=lambda kv: -kv[1]):
-        print(f"  {k:8s} {v}")
+    print("\n==== 赛马小结（同预算 + 换种子验收）====")
+    for k, v in sorted(summary.items(), key=lambda kv: -(kv[1]["val"] or kv[1]["best"])):
+        val = v["val"]
+        if val is not None:
+            verdict = "良性" if abs(val - v["best"]) <= VAL_THRESHOLD else "种子敏感"
+            print(f"  {k:8s} 训练={v['best']}  验证={val} (Δ={val - v['best']:+.1f} {verdict})")
+        else:
+            print(f"  {k:8s} 训练={v['best']}  验证=无候选")
 
 
 if __name__ == "__main__":
