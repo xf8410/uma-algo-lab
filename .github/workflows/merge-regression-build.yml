@@ -40,7 +40,9 @@ jobs:
         working-directory: umaai-rs
 
       - name: cargo test 守门单测（umasim）
-        run: cargo test --release -p umasim 2>&1 | tail -40
+        run: |
+          set -o pipefail
+          cargo test --release -p umasim 2>&1 | tail -40
         working-directory: umaai-rs
 
       - name: 上传 bench_base 产物
