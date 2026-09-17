@@ -8,13 +8,16 @@ on:
         default: "cmaes,cem"
       budget:
         description: "每优化器评估次数上限"
-        default: "15"
+        default: "16"
       uma:
         description: "马娘 gameId"
         default: "111501"
       level:
         description: "评估档位"
         default: "smoke"
+      umaai_ref:
+        description: "模拟器仓库 ref（分支/tag，默认 master）"
+        default: "master"
   push:
     paths: ["lab/**", "optimizers/**", "experiments/**", ".github/workflows/lab-smoke.yml"]
 

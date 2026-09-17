@@ -37,7 +37,7 @@ def decode(x: List[float]) -> Dict:
             lo, hi = f.lo[slot]
             is_int = f.typ in ("arri32", "arrusize")
             v = lo + (hi - lo) * val
-            v = int(round(v)) if is_int else float(v)
+            v = int(round(v)) if is_int else round(float(v), 6)
             arr = list(genome.get(f.name, [None, None, None]))
             arr[slot] = v
             genome[f.name] = arr
@@ -46,7 +46,7 @@ def decode(x: List[float]) -> Dict:
         elif f.typ in ("i32", "u32"):
             genome[f.name] = int(round(f.lo + (f.hi - f.lo) * val))
         else:  # f32
-            genome[f.name] = float(f.lo + (f.hi - f.lo) * val)
+            genome[f.name] = round(float(f.lo + (f.hi - f.lo) * val), 6)
     return genome
 
 
@@ -72,15 +72,16 @@ def genome_to_toml(genome: Dict) -> str:
                     parts.append("null")
                 elif isinstance(p, bool):
                     parts.append("true" if p else "false")
-                elif isinstance(p, float) and p == int(p) and abs(p) < 1e9:
-                    parts.append(str(p))
-                else:
+                elif isinstance(p, float):
+                    parts.append(str(round(p, 6)))
+                else:  # int 槽位
                     parts.append(str(p))
             lines.append(f"{name} = [{', '.join(parts)}]")
         elif isinstance(val, bool):
             lines.append(f"{name} = {'true' if val else 'false'}")
         elif isinstance(val, float):
-            lines.append(f"{name} = {val!r}")
+            # f32 有效位 ~7，round 6 去浮点尾巴（85.11449999999999 -> 85.11445）
+            lines.append(f"{name} = {round(val, 6)!r}")
         else:
             lines.append(f"{name} = {val}")
     lines.append("")
