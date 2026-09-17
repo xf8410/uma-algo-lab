@@ -1,0 +1,78 @@
+name: lab-smoke
+
+on:
+  workflow_dispatch:
+    inputs:
+      optimizers:
+        description: "优化器（逗号分隔: cmaes,tpe,sa,cem）"
+        default: "cmaes,cem"
+      budget:
+        description: "每优化器评估次数上限"
+        default: "15"
+      uma:
+        description: "马娘 gameId"
+        default: "111501"
+      level:
+        description: "评估档位"
+        default: "smoke"
+  push:
+    paths: ["lab/**", "optimizers/**", "experiments/**", ".github/workflows/lab-smoke.yml"]
+
+jobs:
+  smoke:
+    runs-on: ubuntu-latest
+    timeout-minutes: 90
+    steps:
+      - uses: actions/checkout@v4
+
+      # —— 编译模拟器基准工具（黑盒，不改动）——
+      - name: Checkout simulator
+        uses: actions/checkout@v4
+        with:
+          repository: xf8410/umaai-rs
+          ref: master
+          path: umaai-rs
+          token: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Cache cargo
+        uses: actions/cache@v4
+        with:
+          path: |
+            ~/.cargo/registry
+            ~/.cargo/git
+            umaai-rs/target
+          key: cargo-umalab-${{ runner.os }}-${{ hashFiles('umaai-rs/Cargo.lock') }}
+          restore-keys: cargo-umalab-${{ runner.os }}-
+
+      - name: Build bench_base
+        working-directory: umaai-rs
+        run: cargo build --release --bin bench_base
+
+      # —— Python 实验室 ——
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+          cache: pip
+      - run: pip install -r requirements.txt
+
+      - name: Space self-check
+        run: python lab/space.py
+
+      - name: Run horse race
+        env:
+          UMA_BENCH_BIN: ${{ github.workspace }}/umaai-rs/target/release/bench_base
+        run: |
+          python experiments/compare.py \
+            --optimizers "${{ github.event.inputs.optimizers || 'cmaes,cem' }}" \
+            --budget "${{ github.event.inputs.budget || '15' }}" \
+            --uma "${{ github.event.inputs.uma || '111501' }}" \
+            --level "${{ github.event.inputs.level || 'smoke' }}" \
+            --out results/
+
+      - name: Upload results
+        uses: actions/upload-artifact@v4
+        with:
+          name: umalab-results-${{ github.run_id }}
+          path: |
+            results/
+            umaai-rs/logs/
