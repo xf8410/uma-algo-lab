@@ -1,0 +1,52 @@
+name: merge-regression-build
+
+# 上游合并后的编译验证 + 守门单测 + bench_base 产物分发
+# 模拟器代码黑盒零修改；不做任何优化/跑批，纯 build+test+upload
+# 注：模拟器仓（umaai-rs fork）Actions 整体禁用，编译回归统一在本仓跑
+
+on:
+  workflow_dispatch:
+    inputs:
+      umaai_ref:
+        description: "模拟器仓库 ref（分支/tag/commit，默认 master）"
+        default: "master"
+
+concurrency:
+  group: merge-regression-build
+  cancel-in-progress: false
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    timeout-minutes: 90
+    steps:
+      - name: Checkout simulator
+        uses: actions/checkout@v4
+        with:
+          repository: xf8410/umaai-rs
+          ref: ${{ inputs.umaai_ref }}
+          path: umaai-rs
+          token: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: 安装 Rust（stable minimal）
+        uses: dtolnay/rust-toolchain@stable
+
+      - uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: umaai-rs
+
+      - name: cargo build --release（bench_base）
+        run: cargo build --release -p umasim --bin bench_base
+        working-directory: umaai-rs
+
+      - name: cargo test 守门单测（umasim）
+        run: cargo test --release -p umasim 2>&1 | tail -40
+        working-directory: umaai-rs
+
+      - name: 上传 bench_base 产物
+        uses: actions/upload-artifact@v4
+        with:
+          name: bench_base-release
+          path: umaai-rs/target/release/bench_base
+          retention-days: 30
+          if-no-files-found: error
