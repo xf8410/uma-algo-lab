@@ -106,7 +106,14 @@ def free_fields() -> List[Field]:
     return [f for f in ALL_FIELDS if not f.is_fixed()]
 
 def free_dim() -> int:
-    return sum(3 if f.typ.startswith("arr") else 1 for f in free_fields())
+    """可搜索维度 = 标量各 1 维 + 数组的非 None 槽位（与 genome.free_layout 严格一致）"""
+    n = 0
+    for f in free_fields():
+        if f.typ.startswith("arr"):
+            n += sum(1 for s in f.lo if s is not None)
+        else:
+            n += 1
+    return n
 
 if __name__ == "__main__":
     import sys
