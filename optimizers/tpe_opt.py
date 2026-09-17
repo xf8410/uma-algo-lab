@@ -20,12 +20,17 @@ optuna.logging.set_verbosity(optuna.logging.WARNING)
 class TpeOptimizer(Optimizer):
     name = "tpe"
 
-    def __init__(self, dim: int, seed: int = 7):
-        super().__init__(dim, seed)
+    def __init__(self, dim: int, seed: int = 7, center=None):
+        super().__init__(dim, seed, center)
         self.study = optuna.create_study(
             direction="maximize",
             sampler=optuna.samplers.TPESampler(seed=seed, multivariate=True, group=True),
             study_name=f"umalab_tpe_{seed}",
+        )
+        # 首发固定评估 center（warm-start 锚点），后续 TPE 自主建模
+        self.study.enqueue_trial(
+            {f"x{i}": float(v) for i, v in enumerate(self.center)},
+            skip_if_exists=True,
         )
         self.pending: dict = {}
 

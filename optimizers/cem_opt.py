@@ -14,17 +14,23 @@ from .base import Optimizer
 class CemOptimizer(Optimizer):
     name = "cem"
 
-    def __init__(self, dim: int, seed: int = 7, popsize: int = 12, elite_frac: float = 0.2):
-        super().__init__(dim, seed)
+    def __init__(self, dim: int, seed: int = 7, popsize: int = 12, elite_frac: float = 0.2, center=None):
+        super().__init__(dim, seed, center)
         self.rng = np.random.default_rng(seed)
         self.popsize = popsize
         self.n_elite = max(2, int(popsize * elite_frac))
-        self.mu = np.full(dim, 0.5)
-        self.sigma = np.full(dim, 0.15)
+        self.mu = np.asarray(self.center, dtype=float)
+        self.sigma = np.full(dim, 0.08)
         self.sigma_min = 0.012
         self.batch: List[tuple] = []
+        self._first = True
 
     def ask(self) -> List[float]:
+        if self._first:
+            self._first = False
+            x = np.asarray(self.center, dtype=float)
+            self.batch.append((x, None))
+            return x.tolist()
         if len(self.batch) >= self.popsize:
             raise RuntimeError("CEM 本代候选未消费完（tell 次数不足），ask 预算错配")
         x = np.clip(self.rng.normal(self.mu, self.sigma), 0.0, 1.0)

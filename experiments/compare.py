@@ -15,14 +15,14 @@ from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 
-from lab.genome import decode, genome_to_toml
+from lab.genome import decode, genome_to_toml, toml_to_vector
 from lab.space import free_dim
 from optimizers import REGISTRY
 
 
-def run_one(name: str, cls, args) -> dict:
+def run_one(name: str, cls, args, center_vec=None) -> dict:
     from lab.evaluator import Evaluator
-    opt = cls(free_dim(), seed=args.seed)
+    opt = cls(free_dim(), seed=args.seed, center=center_vec)
     ev = Evaluator(args.uma, deck=args.deck, friend=args.friend,
                    cache_path=str(Path(args.out) / f"cache_{name}.json"))
     budget = args.budget
@@ -70,8 +70,15 @@ def main() -> None:
     ap.add_argument("--friend", type=int, default=303054)
     ap.add_argument("--level", default="smoke", choices=["smoke", "full"])
     ap.add_argument("--seed", type=int, default=7)
+    ap.add_argument("--center-toml", default=None,
+                    help="warm-start 基因组 TOML（如 seeds/center_r5.toml）；缺省=空间中心 0.5")
     ap.add_argument("--out", default="results")
     args = ap.parse_args()
+
+    center_vec = None
+    if args.center_toml:
+        center_vec = toml_to_vector(Path(args.center_toml).read_text(encoding="utf-8"))
+        print(f"warm-start: {args.center_toml} → {len(center_vec)} 维向量")
 
     outdir = Path(args.out)
     outdir.mkdir(parents=True, exist_ok=True)
@@ -82,7 +89,7 @@ def main() -> None:
         if name not in REGISTRY:
             print(f"未知优化器 {name}，跳过（可用: {list(REGISTRY)}）")
             continue
-        res = run_one(name, REGISTRY[name], args)
+        res = run_one(name, REGISTRY[name], args, center_vec)
         path = outdir / f"{name}_{ts}.json"
         path.write_text(json.dumps(res, ensure_ascii=False, indent=1), encoding="utf-8")
         summary[name] = res["best_score"]

@@ -7,6 +7,7 @@ TOML 输出与 Rust 端 parse_override_toml 严格对偶：
 - 顶层裸键（无段头），Rust 端跳过段头行
 向量统一工作在 [0,1]^d 归一化空间，decode 时线性映射到各字段值域。
 """
+import re
 from typing import Dict, List, Optional, Tuple
 
 from .space import ALL_FIELDS, Field
@@ -25,6 +26,19 @@ def free_layout() -> List[Tuple[Field, Optional[int]]]:
         else:
             layout.append((f, None))
     return layout
+
+
+def apply_fixed(genome: Dict) -> Dict:
+    """把 GA 定型的固定 bool 字段合入 genome（覆盖层完整性对齐冠军 TOML）。
+
+    固定 bool 不占向量维度，但 preset 默认值与 GA 定型值有 4 处不一致
+    （如 friend_outing_replaces_rest preset=false / 定型=true），缺失会让
+    warm-start 起点偏离 71415.6 基准。空间定义值即定型值。
+    """
+    for f in ALL_FIELDS:
+        if f.typ == "bool" and f.lo is not None and f.name not in genome:
+            genome[f.name] = bool(f.lo)
+    return genome
 
 
 def decode(x: List[float]) -> Dict:
@@ -47,7 +61,7 @@ def decode(x: List[float]) -> Dict:
             genome[f.name] = int(round(f.lo + (f.hi - f.lo) * val))
         else:  # f32
             genome[f.name] = round(float(f.lo + (f.hi - f.lo) * val), 6)
-    return genome
+    return apply_fixed(genome)
 
 
 def center_vector() -> List[float]:
@@ -86,6 +100,70 @@ def genome_to_toml(genome: Dict) -> str:
             lines.append(f"{name} = {val}")
     lines.append("")
     return "\n".join(lines)
+
+
+def toml_to_value(toml_str: str) -> Dict:
+    """TOML 覆盖层文本 -> genome dict（方言感知：接受数组 null 槽位）。
+
+    与 Rust parse_override_toml 同语义：只认 `key = value` 行，段头跳过，
+    null = 槽位不覆盖。缺失键不出现在 dict。
+    """
+    genome: Dict = {}
+    for raw in toml_str.splitlines():
+        line = raw.split("#", 1)[0].strip()
+        if not line or line.startswith("["):
+            continue
+        if "=" not in line:
+            continue
+        name, _, rhs = line.partition("=")
+        name, rhs = name.strip(), rhs.strip()
+
+        def _atom(tok: str):
+            tok = tok.strip()
+            if tok == "null":
+                return None
+            if tok == "true":
+                return True
+            if tok == "false":
+                return False
+            if re.fullmatch(r"-?\d+", tok):
+                return int(tok)
+            return float(tok)
+
+        if rhs.startswith("[") and rhs.endswith("]"):
+            inner = rhs[1:-1].strip()
+            genome[name] = [] if not inner else [_atom(t) for t in inner.split(",")]
+        else:
+            genome[name] = _atom(rhs)
+    return genome
+
+
+def toml_to_vector(toml_str: str) -> List[float]:
+    """TOML 覆盖层 -> [0,1]^d 向量（优化器 warm-start 起点）。
+
+    TOML 未写的键取 0.5（值域中点近似）；null 槽位不占向量维度
+    （free_layout 只收非 None 槽位，与 decode 严格对偶）。
+    """
+    genome = toml_to_value(toml_str)
+    x: List[float] = []
+    for f, slot in free_layout():
+        if f.typ.startswith("arr"):
+            arr = genome.get(f.name)
+            v = arr[slot] if isinstance(arr, list) and slot < len(arr) else None
+            if v is None:
+                x.append(0.5)
+            else:
+                lo, hi = f.lo[slot]
+                x.append(min(1.0, max(0.0, (float(v) - lo) / (hi - lo))))
+        elif f.typ == "bool":
+            x.append(1.0 if genome.get(f.name) else 0.0)
+        else:
+            if f.name not in genome:
+                x.append(0.5)
+            else:
+                v = float(genome[f.name])
+                x.append(min(1.0, max(0.0, (v - f.lo) / (f.hi - f.lo))))
+    return x
 
 
 def genome_hash(genome: Dict) -> str:

@@ -12,9 +12,11 @@ from typing import List, Optional
 class Optimizer(ABC):
     name = "base"
 
-    def __init__(self, dim: int, seed: int = 7):
+    def __init__(self, dim: int, seed: int = 7, center: Optional[List[float]] = None):
         self.dim = dim
         self.rng_seed = seed
+        # warm-start 起点：GA 冠军向量（None = 空间中心 0.5，向后兼容）
+        self.center = [min(1.0, max(0.0, float(v))) for v in center] if center else [0.5] * dim
         self.history: List[dict] = []
         self.t0 = time.time()
 

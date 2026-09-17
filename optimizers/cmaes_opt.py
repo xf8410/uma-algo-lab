@@ -19,19 +19,23 @@ from .base import Optimizer
 class CmaesOptimizer(Optimizer):
     name = "cmaes"
 
-    def __init__(self, dim: int, seed: int = 7, sigma0: float = 0.12):
-        super().__init__(dim, seed)
-        self.opt = CMA(mean=np.full(dim, 0.5), sigma=sigma0,
+    def __init__(self, dim: int, seed: int = 7, sigma0: float = 0.06, center=None):
+        super().__init__(dim, seed, center)
+        self.opt = CMA(mean=np.asarray(self.center, dtype=float), sigma=sigma0,
                        population_size=max(8, 4 + int(3 * np.log(dim))),
                        seed=seed)
         self._pool: List[List[float]] = []   # 当前代尚未派发的候选
         self._solutions: List[tuple] = []    # 当前代已评估的 (x, -score)
+        self._first = True                   # 首发固定评估 center（锚点）
 
     def _refill_pool(self) -> None:
         self._pool = [[min(1.0, max(0.0, float(v))) for v in self.opt.ask()]
                       for _ in range(self.opt.population_size)]
 
     def ask(self) -> List[float]:
+        if self._first:
+            self._first = False
+            return list(self.center)
         if not self._pool:
             self._refill_pool()
         return self._pool.pop(0)

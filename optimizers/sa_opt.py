@@ -15,11 +15,11 @@ from .base import Optimizer
 class SaOptimizer(Optimizer):
     name = "sa"
 
-    def __init__(self, dim: int, seed: int = 7, t0: float = 0.08, t1: float = 0.004, steps: int = 400):
-        super().__init__(dim, seed)
+    def __init__(self, dim: int, seed: int = 7, t0: float = 0.05, t1: float = 0.004, steps: int = 400, center=None):
+        super().__init__(dim, seed, center)
         self.rng = np.random.default_rng(seed)
         self.t0, self.t1, self.steps = t0, t1, max(steps, dim)
-        self.cur = np.full(dim, 0.5)
+        self.cur = np.asarray(self.center, dtype=float)
         self.cur_score = -np.inf
         self.best_x = self.cur.copy()
         self.best_score = -np.inf
