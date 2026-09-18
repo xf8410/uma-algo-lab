@@ -14,6 +14,8 @@ name: region-scan (year3 exhaustive)
 #
 # 补丁只存在于本 workflow（运行时注入），不改模拟器 master；若实验转正，
 # 再把 --pin-region3 正式提交进 fork。
+# 注意：本文件所有 python 均为单行字符串（显式 \n），严禁在 run 块内使用
+# 零缩进三引号串——那会截断 YAML block scalar（首次提交踩过：422 no trigger）。
 
 on:
   workflow_dispatch:
@@ -81,70 +83,24 @@ jobs:
               s = s.replace(old, new)
 
           # 1) BenchConfig 新字段
-          rep(
-"""    #[serde(default)]
-    builds_filter: Option<String>
-}""",
-"""    #[serde(default)]
-    builds_filter: Option<String>,
-    /// 实验专用：钉死第 3 年地区选择为 "id1,id2,id3"（年 3 池 10..=19 内 3 个互异 region_id）。
-    /// 覆盖默认的 All 强制 → ramen_region_strategy=Fixed + ramen_region_fixed=[[id1,id2,id3]]，
-    /// turn 47 只呈现该单候选；第 1/2 年不受影响（仍 All 枚举 + 策略层 argmax）。
-    /// 用途：lab 仓 region-scan workflow 的年 3 组合穷举，与不钉的 baseline 同种子 CRN 配对。
-    #[serde(default)]
-    pin_region3: Option<String>
-}""")
+          old1 = '    #[serde(default)]\n    builds_filter: Option<String>\n}'
+          new1 = '    #[serde(default)]\n    builds_filter: Option<String>,\n    /// 实验专用：钉死第 3 年地区选择为 "id1,id2,id3"（年 3 池 10..=19 内 3 个互异 region_id）。\n    /// 覆盖默认的 All 强制 → ramen_region_strategy=Fixed + ramen_region_fixed=[[id1,id2,id3]]，\n    /// turn 47 只呈现该单候选；第 1/2 年不受影响（仍 All 枚举 + 策略层 argmax）。\n    /// 用途：lab 仓 region-scan workflow 的年 3 组合穷举，与不钉的 baseline 同种子 CRN 配对。\n    #[serde(default)]\n    pin_region3: Option<String>\n}'
+          rep(old1, new1)
 
           # 2) Default impl
-          rep(
-"""            genome_file: None,
-            builds_filter: None
-        }""",
-"""            genome_file: None,
-            builds_filter: None,
-            pin_region3: None
-        }""")
+          old2 = '            genome_file: None,\n            builds_filter: None\n        }'
+          new2 = '            genome_file: None,\n            builds_filter: None,\n            pin_region3: None\n        }'
+          rep(old2, new2)
 
           # 3) CLI 解析 arm
-          rep(
-"""            Arg::Long("genome-file") => {
-                cfg.genome_file = Some(bench::parse_value(&mut parser, "genome-file")?)
-            }""",
-"""            Arg::Long("genome-file") => {
-                cfg.genome_file = Some(bench::parse_value(&mut parser, "genome-file")?)
-            }
-            Arg::Long("pin-region3") => {
-                cfg.pin_region3 = Some(bench::parse_value(&mut parser, "pin-region3")?)
-            }""")
+          old3 = '            Arg::Long("genome-file") => {\n                cfg.genome_file = Some(bench::parse_value(&mut parser, "genome-file")?)\n            }'
+          new3 = '            Arg::Long("genome-file") => {\n                cfg.genome_file = Some(bench::parse_value(&mut parser, "genome-file")?)\n            }\n            Arg::Long("pin-region3") => {\n                cfg.pin_region3 = Some(bench::parse_value(&mut parser, "pin-region3")?)\n            }'
+          rep(old3, new3)
 
           # 4) main()：force-All 之后插入钉选覆盖
-          rep(
-"""    game_config.ramen_region_strategy = RamenRegionStrategy::All;
-    game_config.ramen_region_fixed = None;
-    init_global_with_config(&game_config)?;""",
-"""    game_config.ramen_region_strategy = RamenRegionStrategy::All;
-    game_config.ramen_region_fixed = None;
-    // 实验开关：--pin-region3 钉死第 3 年地区选择（覆盖上面的 All 强制）。
-    // 用途：region-scan workflow 的年 3 组合穷举——1/2 年仍走 All 枚举 + 策略层 argmax，
-    // 仅 turn 47 变成单候选（fixed 组合），与不钉的 baseline 同种子配对。
-    if let Some(pin) = &cfg.pin_region3 {
-        let parts: Vec<&str> = pin.split(',').map(str::trim).filter(|t| !t.is_empty()).collect();
-        anyhow::ensure!(parts.len() == 3, "--pin-region3 需要 3 个 region_id: {pin}");
-        let ids: Vec<usize> = parts
-            .iter()
-            .map(|t| t.parse::<usize>())
-            .collect::<Result<Vec<_>, _>>()
-            .map_err(|e| anyhow::anyhow!("--pin-region3 解析失败: {e}"))?;
-        let regions = [ids[0], ids[1], ids[2]];
-        anyhow::ensure!(
-            regions[0] != regions[1] && regions[0] != regions[2] && regions[1] != regions[2],
-            "--pin-region3 三个 region_id 必须互异: {pin}"
-        );
-        game_config.ramen_region_strategy = RamenRegionStrategy::Fixed;
-        game_config.ramen_region_fixed = Some(vec![regions]);
-        println!("--pin-region3: 第 3 年地区钉到 {regions:?}（1/2 年仍走策略层 argmax）");
-    }
-    init_global_with_config(&game_config)?;""")
+          old4 = '    game_config.ramen_region_strategy = RamenRegionStrategy::All;\n    game_config.ramen_region_fixed = None;\n    init_global_with_config(&game_config)?;'
+          new4 = '    game_config.ramen_region_strategy = RamenRegionStrategy::All;\n    game_config.ramen_region_fixed = None;\n    // 实验开关：--pin-region3 钉死第 3 年地区选择（覆盖上面的 All 强制）。\n    // 用途：region-scan workflow 的年 3 组合穷举——1/2 年仍走 All 枚举 + 策略层 argmax，\n    // 仅 turn 47 变成单候选（fixed 组合），与不钉的 baseline 同种子配对。\n    if let Some(pin) = &cfg.pin_region3 {\n        let parts: Vec<&str> = pin.split(\',\').map(str::trim).filter(|t| !t.is_empty()).collect();\n        anyhow::ensure!(parts.len() == 3, "--pin-region3 需要 3 个 region_id: {pin}");\n        let ids: Vec<usize> = parts\n            .iter()\n            .map(|t| t.parse::<usize>())\n            .collect::<Result<Vec<_>, _>>()\n            .map_err(|e| anyhow::anyhow!("--pin-region3 解析失败: {e}"))?;\n        let regions = [ids[0], ids[1], ids[2]];\n        anyhow::ensure!(\n            regions[0] != regions[1] && regions[0] != regions[2] && regions[1] != regions[2],\n            "--pin-region3 三个 region_id 必须互异: {pin}"\n        );\n        game_config.ramen_region_strategy = RamenRegionStrategy::Fixed;\n        game_config.ramen_region_fixed = Some(vec![regions]);\n        println!("--pin-region3: 第 3 年地区钉到 {regions:?}（1/2 年仍走策略层 argmax）");\n    }\n    init_global_with_config(&game_config)?;'
+          rep(old4, new4)
 
           p.write_text(s, encoding="utf-8")
           print("bench_base.rs 补丁完成：--pin-region3 已接入")
@@ -276,7 +232,7 @@ jobs:
 
           L = ["# 年 3 地区组合穷举报告（CRN 配对 vs 策略层 argmax）", "",
                f"- 基因组: {genome_in} | uma: {uma_in} | builds: {builds_in}",
-               f"- 样本: runs={runs_in} × {builds_in.count(',') + 1} build, seed={seed_in}（baseline 与 120 组合共享 = CRN）",
+               f"- 样本: runs={runs_in} × builds, seed={seed_in}（baseline 与 120 组合共享 = CRN）",
                f"- baseline（argmax）mean = {base_mean:.1f}, fail_rate = {fail_rate(base_rows):.4f}",
                "- 配对差 = 钉选 − baseline；turns 0-46 逐位相同 → 差即纯年 3 地区效应", ""]
 
