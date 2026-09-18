@@ -9,7 +9,8 @@ name: region-scan (year3 exhaustive)
 #
 # 判定：
 # - 某组合配对差 CI95 下界 > 0 → 权重 argmax 族外有油水（年 3 序列进 GA/查表）
-# - 零方差组合 = argmax 本尊（钉选机制自检：它应与 baseline 逐位相同）
+# - baseline 年 3 是逐局状态自适应 argmax（各局可挑不同组合 = 120 组合的混合），
+#   因此不存在与 baseline 逐位相同的固定组合；近零差组合 ≈ argmax 众数
 # - 全体 CI 跨 0 → 年 3 权重调优已榨干，地区关账
 #
 # 补丁只存在于本 workflow（运行时注入），不改模拟器 master；若实验转正，
@@ -31,7 +32,7 @@ on:
         default: 'data/seeds/seed_r8champ.toml'
       runs:
         description: '每 build 局数（总局数 = 121 × builds × runs）'
-        default: '20'
+        default: '100'
       seed:
         description: '基础种子（第 i 局 = seed + i，baseline 与全组合共享 = CRN）'
         default: '42'
@@ -236,12 +237,14 @@ jobs:
                f"- baseline（argmax）mean = {base_mean:.1f}, fail_rate = {fail_rate(base_rows):.4f}",
                "- 配对差 = 钉选 − baseline；turns 0-46 逐位相同 → 差即纯年 3 地区效应", ""]
 
-          if len(ident) == 1:
-              L.append(f"- 机制自检 ✓: 组合 {ident[0]['combo']} 配对差恒 0 → 即 argmax 本尊，钉选通道工作正常")
-          elif len(ident) == 0:
-              L.append("- ⚠️ 机制自检: 未发现零方差组合（argmax 本尊应与 baseline 逐位相同）——需检查补丁/口径")
+          near = [r for r in results if not r["identical"] and abs(r["diff_mean"]) < 60]
+          if ident:
+              L.append(f"- 机制自检: 恒等组合 {len(ident)} 个 → 钉选通道正常")
+          elif near:
+              names = ", ".join(f"{r['combo']}({r['diff_mean']:+.1f})" for r in near[:3])
+              L.append(f"- 机制解读: baseline 年 3 为逐局状态自适应 argmax（各局可挑不同组合 = 120 组合的混合），不存在逐位复现它的固定组合；近零差组合 ≈ argmax 众数: {names}")
           else:
-              L.append(f"- 机制自检: 零方差组合 {len(ident)} 个: {[r['combo'] for r in ident]}（异常，检查是否重复）")
+              L.append("- 机制自检: 无恒等/近零差组合——若各组合差值有清晰结构（如 12/13 系深负）则钉选有效，否则检查补丁")
 
           L += ["", "## Top 15（按配对差降序）", "",
                 "| 组合 | 钉选均值 | 配对差 | ±CI95 | 胜率% | 显著? |", "|---|---|---|---|---|---|"]
@@ -263,7 +266,6 @@ jobs:
           else:
               best = results[0]
               L.append(f"- 无组合显著优于 argmax（最优 {best['combo']}：diff={best['diff_mean']:+.1f} ±{best['ci95']}，CI 下界 ≤ 0）→ **年 3 权重 argmax 已在噪声内最优，地区关账候选**")
-          L.append(f"- 注: runs={runs_in} 为首探样本量；边缘结论建议加大 runs 复跑确认")
 
           with open("region_scan_report.md", "w", encoding="utf-8") as fh:
               fh.write("\n".join(L))
