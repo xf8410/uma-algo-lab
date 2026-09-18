@@ -23,12 +23,20 @@ on:
         description: '代数'
         required: false
         default: '100'
+      elitism:
+        description: '精英保留数（留空=二进制默认）'
+        required: false
+        default: ''
+      seeds:
+        description: '种子包（逗号分隔，相对 lab 仓路径；留空=不注入）'
+        required: false
+        default: ''
       tag:
         description: '产物 artifact 标签（如 r9）'
         required: false
         default: 'ga_run'
       loop_minutes:
-        description: '循环分钟数（0=单轮；>0 时循环随机马+随机卡跑到时限）'
+        description: '循环分钟数（0=至少跑一轮；>0 时循环随机马+随机卡跑到时限）'
         required: false
         default: '0'
 
@@ -75,11 +83,27 @@ jobs:
           else
             UMA_ARGS="--uma ${{ github.event.inputs.uma }}"
           fi
-          echo "GA run: uma=${{ github.event.inputs.uma }} ref=${{ inputs.umaai_ref }} loop=${{ github.event.inputs.loop_minutes }}min pop=${{ github.event.inputs.pop }} gens=${{ github.event.inputs.gens }} exclude=[${{ github.event.inputs.exclude_chara }}]"
+          # 种子包路径 → ../ 前缀（ga_optimize 工作目录 = umaai-rs/）
+          SEED_ARGS=""
+          if [ -n "${{ github.event.inputs.seeds }}" ]; then
+            for s in $(echo "${{ github.event.inputs.seeds }}" | tr ',' ' '); do
+              SEED_ARGS="$SEED_ARGS,../$s"
+            done
+            SEED_ARGS="${SEED_ARGS#,}"
+          fi
+          SEED_GENOME_ARGS=""
+          if [ -n "$SEED_ARGS" ]; then
+            SEED_GENOME_ARGS="--seed-genome $SEED_ARGS"
+          fi
+          ELITISM_ARGS=""
+          if [ -n "${{ github.event.inputs.elitism }}" ]; then
+            ELITISM_ARGS="--elitism ${{ github.event.inputs.elitism }}"
+          fi
+          echo "GA run: uma=${{ github.event.inputs.uma }} ref=${{ inputs.umaai_ref }} loop=${{ github.event.inputs.loop_minutes }}min pop=${{ github.event.inputs.pop }} gens=${{ github.event.inputs.gens }} elitism=[${{ github.event.inputs.elitism }}] seeds=[${{ github.event.inputs.seeds }}] exclude=[${{ github.event.inputs.exclude_chara }}]"
           LOOP_MIN=${{ github.event.inputs.loop_minutes }}
           END=$((SECONDS + LOOP_MIN * 60))
           i=0
-          while [ $SECONDS -lt $END ]; do
+          while [ $SECONDS -lt $END ] || [ $i -lt 1 ]; do
             i=$((i+1))
             RUN_UMA_ARGS="$UMA_ARGS"
             if [ "${{ github.event.inputs.uma }}" = "random" ] && [ $((i % 2)) -eq 1 ]; then
@@ -90,8 +114,10 @@ jobs:
             fi
             ./target/release/ga_optimize \
               $RUN_UMA_ARGS $EXCLUDE_ARGS \
+              --seed $i \
               --pop ${{ github.event.inputs.pop }} \
               --gens ${{ github.event.inputs.gens }} \
+              $ELITISM_ARGS $SEED_GENOME_ARGS \
               --out ga_logs/run_$i || echo "[warn] 第 $i 轮失败，继续下一轮"
           done
           echo "循环结束：共 $i 轮"
