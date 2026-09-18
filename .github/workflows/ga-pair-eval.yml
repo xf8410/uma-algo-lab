@@ -29,7 +29,7 @@ jobs:
 
       - name: Pair analysis
         run: |
-          python3 tools/analyze_pair_eval.py eval_runs --out pair_report.md
+          python3 tools/analyze_pair_eval.py eval_runs data/eval_seq_35332465533.csv
           echo "===== REPORT ====="
           cat pair_report.md
 
