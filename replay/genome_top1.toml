@@ -1,0 +1,56 @@
+# GA 最优基因组覆盖层（Some 子集 preset 快照，自动生成）
+# None 字段未列出 = 保留 RecommendedRamenTrainer::new() preset
+# 适应度口径见 ga_generations.csv；本文件供人工评审与后续固定参数实验
+
+[policy]
+vital_rest = 37
+vital_rest_eating = [37, 37, 9]
+wisdom_vital_floor = 36
+status_rate = 1
+pt_rate = [16, 85.11441, 64]
+pt_tradeoff = 44.55522
+pt_tradeoff_shining = 21.922499
+pt_tradeoff_super = 29.123894
+cap_discount_weight = 1.2113717
+failure_penalty = 60
+effective_ramen_failure = false
+shining_bonus = 60
+train_vital_value = 1.6914387
+rest_base = 45.722157
+rest_target_vital = 55
+race_free_urgency_weight = 2919.167
+race_gate_slack = 1
+friend_outing_bonus = 61.314613
+ramen_pt_weight = 4.628715
+ramen_special_cost = 6.746099
+ramen_stock_cost = 0.4
+region_xunlian_weight = 14.992668
+region_hint_weight = 20.238716
+region_youqing_weight = 0
+event_motivation_weight = 32.12148
+
+[local]
+early_bond_value = 6.8448305
+low_friend_bond_value = 8.487566
+overflow_value = 1.3544745
+max_base_score_sacrifice = 384.53598
+status_reserve_max = 40
+dynamic_status_balance = false
+status_gap_strength = 0.14053416
+probabilistic_hint = false
+expected_fail = false
+ramen_window_weight = 0.08024326
+ramen_train_coupling_weight = 3.0614443
+ramen_weak_train_boost = 1.3334891
+friend_hidden_starve_weight = 506.93158
+friend_proactive_weight = 213.04054
+eat_guarantee_weight = 0.5240228
+eat_requires_covered_train = true
+y3_post_train_vital_target = 23
+y3_vital_shortfall_weight = 0.08438793
+y3_post_train_hard_floor = 3
+y3_recovery_horizon = false
+friend_outing_replaces_rest = true
+friend_outing3_recovery_vital = 0
+friend_outing_cumulative_caps = [null, null, 5]
+dynamic_special_targets = true

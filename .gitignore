@@ -1,5 +1,6 @@
 __pycache__/
 *.pyc
 results/
-replay/
+replay/*
+!replay/genome_top1.toml
 .cache/
