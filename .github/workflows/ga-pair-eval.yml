@@ -1,0 +1,42 @@
+name: ga-pair-eval
+
+on:
+  workflow_dispatch:
+    inputs:
+      artifact_id:
+        description: "GA seed eval artifact id (解包 run_*/ga_detail.csv)"
+        default: "10543408803"
+      r8_baseline:
+        description: "r8champ 老账绝对分基准 (71k 口径锚点)"
+        default: "71415.6"
+
+jobs:
+  analyze:
+    runs-on: ubuntu-latest
+    timeout-minutes: 40
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Download artifact (runner 内网, 秒级)
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          gh api "repos/${{ github.repository }}/actions/artifacts/${{ inputs.artifact_id }}/zip" > a.zip
+          ls -la a.zip
+          unzip -q a.zip -d eval_runs
+          ls eval_runs | head -3
+          ls eval_runs | wc -l
+
+      - name: Pair analysis
+        run: |
+          python3 tools/analyze_pair_eval.py eval_runs --out pair_report.md
+          echo "===== REPORT ====="
+          cat pair_report.md
+
+      - name: Upload report
+        uses: actions/upload-artifact@v4
+        with:
+          name: pair-report
+          path: |
+            pair_report.md
+            pair_report.json
