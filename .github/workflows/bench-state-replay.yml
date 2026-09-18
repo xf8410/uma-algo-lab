@@ -1,0 +1,80 @@
+name: bench-state-replay
+
+# 逐回合状态回放：bench_base --log（决策轨迹含状态快照列）
+# 产出 7 卡组决策 CSV（含五维/PT/吃面/体力/RMJ 状态），artifact 分发
+# 模拟器仓 Actions 整体禁用，回放统一在本仓跑
+
+on:
+  workflow_dispatch:
+    inputs:
+      umaai_ref:
+        description: "模拟器仓库 ref（完整 40 位 commit hash）"
+        required: true
+        default: "master"
+      uma:
+        description: "育成马娘 id"
+        default: "106402"
+      seed:
+        description: "base_seed"
+        default: "1001"
+      genome_path:
+        description: "lab 仓内 genome 覆盖层相对路径"
+        default: "replay/genome_top1.toml"
+      builds:
+        description: "只跑指定卡组（逗号分隔，空=全部 preset）"
+        default: ""
+
+concurrency:
+  group: bench-state-replay
+  cancel-in-progress: false
+
+jobs:
+  replay:
+    runs-on: ubuntu-latest
+    timeout-minutes: 60
+    steps:
+      - name: Checkout lab（genome 覆盖层）
+        uses: actions/checkout@v4
+
+      - name: Checkout simulator
+        uses: actions/checkout@v4
+        with:
+          repository: xf8410/umaai-rs
+          ref: ${{ inputs.umaai_ref }}
+          path: umaai-rs
+          token: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: 安装 Rust（stable minimal）
+        uses: dtolnay/rust-toolchain@stable
+
+      - uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: umaai-rs
+
+      - name: cargo build --release（bench_base）
+        run: cargo build --release -p umasim --bin bench_base
+        working-directory: umaai-rs
+
+      - name: 回放 7 卡组（决策轨迹+状态快照）
+        working-directory: umaai-rs
+        run: |
+          set -o pipefail
+          cp "../${{ inputs.genome_path }}" genome_top1.toml
+          ARGS="--uma ${{ inputs.uma }} --trainer handwritten --genome-file genome_top1.toml --log --runs 1 --seed ${{ inputs.seed }} --out logs_replay"
+          if [ -n "${{ inputs.builds }}" ]; then ARGS="$ARGS --builds ${{ inputs.builds }}"; fi
+          ./target/release/bench_base $ARGS 2>&1 | tee replay_stdout.log | tail -30
+
+      - name: 收集产物
+        run: |
+          mkdir -p replay_out
+          cp umaai-rs/logs_replay/*.csv replay_out/ 2>/dev/null || true
+          cp umaai-rs/replay_stdout.log replay_out/ 2>/dev/null || true
+          ls -la replay_out
+
+      - name: 上传回放产物
+        uses: actions/upload-artifact@v4
+        with:
+          name: replay-state-logs
+          path: replay_out/
+          retention-days: 30
+          if-no-files-found: error
