@@ -1,0 +1,327 @@
+name: region-scan (year3 exhaustive)
+
+# 实验：第 3 年地区组合穷举 C(10,3)=120 × 手写策略 + GA 冠军基因组，CRN 同种子配对。
+#
+# 原理：bench_base 启动时把 Y3 地区选择强制回策略层（All 枚举 120 组合 + 权重 argmax）。
+# 本 workflow 在编译前给 bench_base 原地打一个 --pin-region3 补丁（python 锚点替换，
+# 锚点丢失/不唯一立即红），把 turn 47 钉到指定组合；第 1/2 年不受影响
+# （turns 0-46 逐位相同），故配对差 = 纯年 3 地区效应。
+#
+# 判定：
+# - 某组合配对差 CI95 下界 > 0 → 权重 argmax 族外有油水（年 3 序列进 GA/查表）
+# - 零方差组合 = argmax 本尊（钉选机制自检：它应与 baseline 逐位相同）
+# - 全体 CI 跨 0 → 年 3 权重调优已榨干，地区关账
+#
+# 补丁只存在于本 workflow（运行时注入），不改模拟器 master；若实验转正，
+# 再把 --pin-region3 正式提交进 fork。
+
+on:
+  workflow_dispatch:
+    inputs:
+      umaai_ref:
+        description: '模拟器 ref（钉住 SHA，保证补丁锚点稳定）'
+        default: 'd9399f00d6175649ca04cdd2c36403070ea541d6'
+      uma:
+        description: '马娘 gameId（实验室考场默认 111501）'
+        default: '111501'
+      genome:
+        description: 'lab 仓内基因组覆盖层路径'
+        default: 'data/seeds/seed_r8champ.toml'
+      runs:
+        description: '每 build 局数（总局数 = 121 × builds × runs）'
+        default: '20'
+      seed:
+        description: '基础种子（第 i 局 = seed + i，baseline 与全组合共享 = CRN）'
+        default: '42'
+      builds:
+        description: 'build 子集（逗号分隔，与 lab smoke 口径一致）'
+        default: 'speed,stamina,power_wisdom'
+
+concurrency:
+  group: region-scan
+  cancel-in-progress: false
+
+jobs:
+  scan:
+    runs-on: ubuntu-latest
+    timeout-minutes: 150
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Checkout simulator (pinned ref)
+        uses: actions/checkout@v4
+        with:
+          repository: xf8410/umaai-rs
+          ref: ${{ inputs.umaai_ref }}
+          path: umaai-rs
+          token: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Inject umaDB (与 GA 考场一致)
+        run: cp data/umaDB.json umaai-rs/gamedata/umaDB.json
+
+      - uses: dtolnay/rust-toolchain@stable
+
+      - uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: umaai-rs
+
+      - name: Patch bench_base with --pin-region3 (锚点断言，失败即红)
+        working-directory: umaai-rs
+        run: |
+          python3 - <<'PYEOF'
+          from pathlib import Path
+
+          p = Path("crates/umasim/src/bin/bench_base.rs")
+          s = p.read_text(encoding="utf-8")
+
+          def rep(old, new):
+              global s
+              n = s.count(old)
+              assert n == 1, f"补丁锚点非唯一/未找到 (count={n}): {old[:80]!r}"
+              s = s.replace(old, new)
+
+          # 1) BenchConfig 新字段
+          rep(
+"""    #[serde(default)]
+    builds_filter: Option<String>
+}""",
+"""    #[serde(default)]
+    builds_filter: Option<String>,
+    /// 实验专用：钉死第 3 年地区选择为 "id1,id2,id3"（年 3 池 10..=19 内 3 个互异 region_id）。
+    /// 覆盖默认的 All 强制 → ramen_region_strategy=Fixed + ramen_region_fixed=[[id1,id2,id3]]，
+    /// turn 47 只呈现该单候选；第 1/2 年不受影响（仍 All 枚举 + 策略层 argmax）。
+    /// 用途：lab 仓 region-scan workflow 的年 3 组合穷举，与不钉的 baseline 同种子 CRN 配对。
+    #[serde(default)]
+    pin_region3: Option<String>
+}""")
+
+          # 2) Default impl
+          rep(
+"""            genome_file: None,
+            builds_filter: None
+        }""",
+"""            genome_file: None,
+            builds_filter: None,
+            pin_region3: None
+        }""")
+
+          # 3) CLI 解析 arm
+          rep(
+"""            Arg::Long("genome-file") => {
+                cfg.genome_file = Some(bench::parse_value(&mut parser, "genome-file")?)
+            }""",
+"""            Arg::Long("genome-file") => {
+                cfg.genome_file = Some(bench::parse_value(&mut parser, "genome-file")?)
+            }
+            Arg::Long("pin-region3") => {
+                cfg.pin_region3 = Some(bench::parse_value(&mut parser, "pin-region3")?)
+            }""")
+
+          # 4) main()：force-All 之后插入钉选覆盖
+          rep(
+"""    game_config.ramen_region_strategy = RamenRegionStrategy::All;
+    game_config.ramen_region_fixed = None;
+    init_global_with_config(&game_config)?;""",
+"""    game_config.ramen_region_strategy = RamenRegionStrategy::All;
+    game_config.ramen_region_fixed = None;
+    // 实验开关：--pin-region3 钉死第 3 年地区选择（覆盖上面的 All 强制）。
+    // 用途：region-scan workflow 的年 3 组合穷举——1/2 年仍走 All 枚举 + 策略层 argmax，
+    // 仅 turn 47 变成单候选（fixed 组合），与不钉的 baseline 同种子配对。
+    if let Some(pin) = &cfg.pin_region3 {
+        let parts: Vec<&str> = pin.split(',').map(str::trim).filter(|t| !t.is_empty()).collect();
+        anyhow::ensure!(parts.len() == 3, "--pin-region3 需要 3 个 region_id: {pin}");
+        let ids: Vec<usize> = parts
+            .iter()
+            .map(|t| t.parse::<usize>())
+            .collect::<Result<Vec<_>, _>>()
+            .map_err(|e| anyhow::anyhow!("--pin-region3 解析失败: {e}"))?;
+        let regions = [ids[0], ids[1], ids[2]];
+        anyhow::ensure!(
+            regions[0] != regions[1] && regions[0] != regions[2] && regions[1] != regions[2],
+            "--pin-region3 三个 region_id 必须互异: {pin}"
+        );
+        game_config.ramen_region_strategy = RamenRegionStrategy::Fixed;
+        game_config.ramen_region_fixed = Some(vec![regions]);
+        println!("--pin-region3: 第 3 年地区钉到 {regions:?}（1/2 年仍走策略层 argmax）");
+    }
+    init_global_with_config(&game_config)?;""")
+
+          p.write_text(s, encoding="utf-8")
+          print("bench_base.rs 补丁完成：--pin-region3 已接入")
+          PYEOF
+
+      - name: Build bench_base
+        working-directory: umaai-rs
+        run: cargo build --release --bin bench_base
+
+      - name: Baseline (Y3 = 策略层 argmax, 不钉)
+        working-directory: umaai-rs
+        run: |
+          ./target/release/bench_base \
+            --uma "${{ inputs.uma }}" --trainer handwritten \
+            --genome-file "../${{ inputs.genome }}" \
+            --builds "${{ inputs.builds }}" \
+            --runs "${{ inputs.runs }}" --seed "${{ inputs.seed }}" \
+            --out logs_baseline
+
+      - name: Enumerate year3 combos (C(10,3)=120, pinned, 3 workers)
+        working-directory: umaai-rs
+        run: |
+          python3 - <<'PYEOF'
+          import itertools, os, subprocess
+          from concurrent.futures import ThreadPoolExecutor
+
+          uma = "${{ inputs.uma }}"
+          runs = "${{ inputs.runs }}"
+          seed = "${{ inputs.seed }}"
+          builds = "${{ inputs.builds }}"
+          genome = "../${{ inputs.genome }}"
+
+          combos = list(itertools.combinations(range(10, 20), 3))
+          print(f"年 3 组合数 = {len(combos)}", flush=True)
+
+          def run_one(c):
+              tag = "_".join(map(str, c))
+              out = f"logs_y3/{tag}"
+              os.makedirs(out, exist_ok=True)
+              cmd = ["./target/release/bench_base",
+                     "--uma", uma, "--trainer", "handwritten",
+                     "--genome-file", genome, "--builds", builds,
+                     "--runs", runs, "--seed", seed, "--out", out,
+                     "--pin-region3", ",".join(map(str, c))]
+              r = subprocess.run(cmd, capture_output=True, text=True)
+              if r.returncode != 0:
+                  tail = "\n".join((r.stderr or "").splitlines()[-6:])
+                  print(f"[{tag}] FAIL({r.returncode}) {tail}", flush=True)
+              return (tag, r.returncode)
+
+          with ThreadPoolExecutor(max_workers=3) as ex:
+              codes = list(ex.map(run_one, combos))
+          bad = [t for t, rc in codes if rc != 0]
+          if bad:
+              raise SystemExit(f"{len(bad)} 个组合失败: {bad[:8]}")
+          print(f"全部 {len(codes)} 个组合完成", flush=True)
+          PYEOF
+
+      - name: Summarize (paired CRN vs baseline)
+        run: |
+          python3 - <<'PYEOF'
+          import csv, itertools, os, statistics as st
+
+          genome_in = "${{ inputs.genome }}"
+          uma_in = "${{ inputs.uma }}"
+          builds_in = "${{ inputs.builds }}"
+          runs_in = "${{ inputs.runs }}"
+          seed_in = "${{ inputs.seed }}"
+
+          def load_rows(path):
+              with open(path, newline="", encoding="utf-8") as fh:
+                  return list(csv.DictReader(fh))
+
+          def fail_rate(rows):
+              vals = [0.0 if str(r.get("free_race_ok", "1")).strip().lower() in ("", "1", "true") else 1.0 for r in rows]
+              return st.mean(vals) if vals else 0.0
+
+          base_rows = load_rows("umaai-rs/logs_baseline/bench_base_results.csv")
+          base_scores = [float(r["score"]) for r in base_rows]
+          base_mean = st.mean(base_scores)
+          header = list(base_rows[0].keys())
+          rmj_cols = [k for k in header if "rmj" in k.lower()]
+          pt_cols = [k for k in header if "scenario_pt" in k.lower()]
+
+          results = []
+          for c in itertools.combinations(range(10, 20), 3):
+              tag = "_".join(map(str, c))
+              p = f"umaai-rs/logs_y3/{tag}/bench_base_results.csv"
+              if not os.path.exists(p):
+                  continue
+              rows = load_rows(p)
+              pin_scores = [float(r["score"]) for r in rows]
+              n = min(len(pin_scores), len(base_scores))
+              diffs = [pin_scores[i] - base_scores[i] for i in range(n)]
+              md = st.mean(diffs)
+              sd = st.pstdev(diffs) if len(diffs) > 1 else 0.0
+              ci = 1.96 * sd / (len(diffs) ** 0.5) if len(diffs) > 1 else 0.0
+              win = sum(1 for d in diffs if d > 0) / max(1, len(diffs))
+              rec = {
+                  "combo": tag,
+                  "pin_mean": round(st.mean(pin_scores), 1),
+                  "diff_mean": round(md, 1),
+                  "diff_std": round(sd, 1),
+                  "ci95": round(ci, 1),
+                  "win_rate_pct": round(win * 100, 1),
+                  "fail_rate": round(fail_rate(rows), 4),
+              }
+              if rmj_cols:
+                  try:
+                      rec["rmj_mean"] = round(st.mean(float(r[rmj_cols[0]]) for r in rows), 3)
+                  except Exception:
+                      pass
+              if pt_cols:
+                  try:
+                      rec["pt_mean"] = round(st.mean(float(r[pt_cols[-1]]) for r in rows), 1)
+                  except Exception:
+                      pass
+              rec["identical"] = 1 if (sd == 0.0 and md == 0.0) else 0
+              results.append(rec)
+
+          results.sort(key=lambda r: -r["diff_mean"])
+          sig = [r for r in results if r["diff_mean"] - r["ci95"] > 0]
+          ident = [r for r in results if r["identical"]]
+
+          with open("region_scan_summary.csv", "w", newline="", encoding="utf-8") as fh:
+              w = csv.DictWriter(fh, fieldnames=list(results[0].keys()))
+              w.writeheader()
+              w.writerows(results)
+
+          L = ["# 年 3 地区组合穷举报告（CRN 配对 vs 策略层 argmax）", "",
+               f"- 基因组: {genome_in} | uma: {uma_in} | builds: {builds_in}",
+               f"- 样本: runs={runs_in} × {builds_in.count(',') + 1} build, seed={seed_in}（baseline 与 120 组合共享 = CRN）",
+               f"- baseline（argmax）mean = {base_mean:.1f}, fail_rate = {fail_rate(base_rows):.4f}",
+               "- 配对差 = 钉选 − baseline；turns 0-46 逐位相同 → 差即纯年 3 地区效应", ""]
+
+          if len(ident) == 1:
+              L.append(f"- 机制自检 ✓: 组合 {ident[0]['combo']} 配对差恒 0 → 即 argmax 本尊，钉选通道工作正常")
+          elif len(ident) == 0:
+              L.append("- ⚠️ 机制自检: 未发现零方差组合（argmax 本尊应与 baseline 逐位相同）——需检查补丁/口径")
+          else:
+              L.append(f"- 机制自检: 零方差组合 {len(ident)} 个: {[r['combo'] for r in ident]}（异常，检查是否重复）")
+
+          L += ["", "## Top 15（按配对差降序）", "",
+                "| 组合 | 钉选均值 | 配对差 | ±CI95 | 胜率% | 显著? |", "|---|---|---|---|---|---|"]
+          for r in results[:15]:
+              mark = "✅" if r["diff_mean"] - r["ci95"] > 0 else ""
+              L.append(f"| {r['combo']} | {r['pin_mean']} | {r['diff_mean']:+.1f} | ±{r['ci95']} | {r['win_rate_pct']} | {mark} |")
+
+          if len(results) > 5:
+              L += ["", "## Bottom 5", "", "| 组合 | 配对差 | ±CI95 |", "|---|---|---|"]
+              for r in results[-5:]:
+                  L.append(f"| {r['combo']} | {r['diff_mean']:+.1f} | ±{r['ci95']} |")
+
+          L += ["", "## 结论", ""]
+          if not results:
+              L.append("- 无组合数据（枚举步骤失败？）")
+          elif sig:
+              best = sig[0]
+              L.append(f"- **{len(sig)} 个组合配对差显著 > 0**；最优 {best['combo']}：diff={best['diff_mean']:+.1f} ±{best['ci95']} → **权重 argmax 族外有油水**，年 3 序列值得进 GA/查表")
+          else:
+              best = results[0]
+              L.append(f"- 无组合显著优于 argmax（最优 {best['combo']}：diff={best['diff_mean']:+.1f} ±{best['ci95']}，CI 下界 ≤ 0）→ **年 3 权重 argmax 已在噪声内最优，地区关账候选**")
+          L.append(f"- 注: runs={runs_in} 为首探样本量；边缘结论建议加大 runs 复跑确认")
+
+          with open("region_scan_report.md", "w", encoding="utf-8") as fh:
+              fh.write("\n".join(L))
+          print("\n".join(L))
+          PYEOF
+
+      - name: Upload artifacts
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: region-scan-${{ github.run_id }}
+          path: |
+            region_scan_summary.csv
+            region_scan_report.md
+            umaai-rs/logs_baseline/bench_base_results.csv
+            umaai-rs/logs_y3/
+          retention-days: 30
