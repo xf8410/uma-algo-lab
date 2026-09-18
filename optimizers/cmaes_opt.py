@@ -27,6 +27,7 @@ class CmaesOptimizer(Optimizer):
         self._pool: List[List[float]] = []   # 当前代尚未派发的候选
         self._solutions: List[tuple] = []    # 当前代已评估的 (x, -score)
         self._first = True                   # 首发固定评估 center（锚点）
+        self._anchor_pending = True          # 锚点分未消费（只记 best，不进整代更新）
 
     def _refill_pool(self) -> None:
         self._pool = [[min(1.0, max(0.0, float(v))) for v in self.opt.ask()]
@@ -42,6 +43,9 @@ class CmaesOptimizer(Optimizer):
 
     def tell(self, x: List[float], score: float) -> None:
         self.log(x, score)
+        if self._anchor_pending:
+            self._anchor_pending = False
+            return  # center 锚点分只记 best，不进整代更新（防旧样本混入下一代）
         self._solutions.append((np.asarray(x, dtype=float), -score))  # cmaes 最小化
         if len(self._solutions) >= self.opt.population_size:
             self.opt.tell(self._solutions)

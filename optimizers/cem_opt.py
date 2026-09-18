@@ -28,9 +28,8 @@ class CemOptimizer(Optimizer):
     def ask(self) -> List[float]:
         if self._first:
             self._first = False
-            x = np.asarray(self.center, dtype=float)
-            self.batch.append((x, None))
-            return x.tolist()
+            # center 锚点不进 batch：分数只记 best，不参与精英更新（防混样污染第一代）
+            return np.asarray(self.center, dtype=float).tolist()
         if len(self.batch) >= self.popsize:
             raise RuntimeError("CEM 本代候选未消费完（tell 次数不足），ask 预算错配")
         x = np.clip(self.rng.normal(self.mu, self.sigma), 0.0, 1.0)

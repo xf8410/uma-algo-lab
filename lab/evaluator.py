@@ -88,8 +88,10 @@ class Evaluator:
             with open(res, newline="", encoding="utf-8") as fh:
                 for row in csv.DictReader(fh):
                     scores.append(float(row["score"]))
-                    race_ok = row.get("race_gate_ok", "")
-                    if race_ok not in ("", "1", "true", "True"):
+                    # bench_base results.csv 的自选比赛达标列是 free_race_ok（2026-09-18 修：
+                    # 原误读不存在的 race_gate_ok，恒空 → 失败判别失效，fail_rate 恒 0）
+                    race_ok = str(row.get("free_race_ok", "1")).strip().lower()
+                    if race_ok not in ("", "1", "true"):
                         fails.append(1.0)
                     else:
                         fails.append(0.0)
