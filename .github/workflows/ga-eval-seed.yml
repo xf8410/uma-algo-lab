@@ -1,0 +1,108 @@
+name: GA seed-genome eval
+
+on:
+  workflow_dispatch:
+    inputs:
+      umaai_ref:
+        description: '模拟器仓库 ref（分支/sha，默认 master）'
+        required: false
+        default: 'master'
+      uma:
+        description: '育成马娘（random=随机池，奇数轮固定106301）'
+        required: false
+        default: 'random'
+      exclude_chara:
+        description: '手动排除 chara_id，空格分隔'
+        required: false
+        default: ''
+      loop_minutes:
+        description: '循环分钟数'
+        required: false
+        default: '50'
+      seeds:
+        description: '种子包（逗号分隔，相对 lab 仓路径）'
+        required: false
+        default: 'data/seeds/seed_r8champ.toml,data/seeds/seed_tpe_best.toml'
+
+jobs:
+  eval:
+    runs-on: ubuntu-latest
+    timeout-minutes: 120
+    steps:
+      - uses: actions/checkout@v4
+
+      # —— 模拟器检出（ref 可指向含 --seed-genome 的 fork commit）——
+      - name: Checkout simulator
+        uses: actions/checkout@v4
+        with:
+          repository: xf8410/umaai-rs
+          ref: ${{ inputs.umaai_ref }}
+          path: umaai-rs
+
+      # umaDB.json（267骑，含 106301 生野狄杜斯）由 lab 仓 data/ 提供
+      - name: Inject umaDB
+        run: cp data/umaDB.json umaai-rs/gamedata/umaDB.json
+
+      - uses: dtolnay/rust-toolchain@stable
+
+      - uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: umaai-rs
+
+      - name: Build ga_optimize
+        working-directory: umaai-rs
+        run: cargo build --release --bin ga_optimize
+
+      - name: Run paired eval loops
+        working-directory: umaai-rs
+        run: |
+          EXCLUDE_ARGS=""
+          if [ -n "${{ github.event.inputs.exclude_chara }}" ]; then
+            for c in ${{ github.event.inputs.exclude_chara }}; do
+              EXCLUDE_ARGS="$EXCLUDE_ARGS --exclude-chara $c"
+            done
+          fi
+          if [ "${{ github.event.inputs.uma }}" = "random" ]; then
+            UMA_ARGS="--random-uma"
+          else
+            UMA_ARGS="--uma ${{ github.event.inputs.uma }}"
+          fi
+          # 种子包路径 → ../ 前缀（ga_optimize 工作目录 = umaai-rs/）
+          SEED_ARGS=""
+          for s in $(echo "${{ github.event.inputs.seeds }}" | tr ',' ' '); do
+            SEED_ARGS="$SEED_ARGS,../$s"
+          done
+          SEED_ARGS="${SEED_ARGS#,}"
+          echo "seed-genome = $SEED_ARGS"
+          END=$((SECONDS + ${{ github.event.inputs.loop_minutes }} * 60))
+          i=0
+          while [ $SECONDS -lt $END ]; do
+            i=$((i+1))
+            RUN_UMA_ARGS="$UMA_ARGS"
+            if [ "${{ github.event.inputs.uma }}" = "random" ] && [ $((i % 2)) -eq 1 ]; then
+              RUN_UMA_ARGS="--uma 106301"
+              echo "===== 回验第 $i 轮【固定】生野狄杜斯 106301（用户令：必须有）====="
+            else
+              echo "===== 回验第 $i 轮随机马 ====="
+            fi
+            ./target/release/ga_optimize \
+              $RUN_UMA_ARGS $EXCLUDE_ARGS \
+              --seed $i \
+              --pop 4 --gens 1 --elitism 4 \
+              --seed-genome "$SEED_ARGS" \
+              --out ga_logs/run_$i || echo "[warn] 第 $i 轮失败，继续"
+          done
+          echo "回验结束：共 $i 轮"
+
+      - name: Summarize
+        if: always()
+        working-directory: umaai-rs
+        run: python3 ../scripts/summarize_seed_eval.py ga_logs
+
+      - name: Upload artifacts
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: ga-seed-eval-${{ github.run_id }}
+          path: umaai-rs/ga_logs/
+          retention-days: 90
