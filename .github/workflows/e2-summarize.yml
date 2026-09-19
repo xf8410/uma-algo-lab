@@ -6,10 +6,19 @@ name: e2-summarize (champion loop aggregation)
 # 逐轮口径：ga_generations.csv 的 fitness 列取 max = 末代最优 = 最终精评（日志已对上：gen7=61107 ↔ 精评 61106.9）。
 # 若 round 目录未记录 uma id，则做全体分布对比（两 run 马池与轮换结构相同，期望意义等价）；
 # probe 步骤先打印真实 schema，若解析错位可据此修正 v2。
+# 触发器：push 到本分支（写入本文件的提交自身即触发一次）+ 手动 dispatch（带占位输入，
+# 与 region-scan 的已验证 on: 写法一致——空 workflow_dispatch: 在本仓曾导致 dispatch 404）。
 # 注意：run 块内所有行保持块缩进，严禁列 0 内容（会截断 YAML block scalar，region-scan 首版踩过）。
 
 on:
+  push:
+    branches:
+      - workbench/e2-summarize
   workflow_dispatch:
+    inputs:
+      note:
+        description: 'unused placeholder'
+        default: ''
 
 concurrency:
   group: e2-summarize
