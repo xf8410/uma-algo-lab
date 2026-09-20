@@ -77,8 +77,10 @@ jobs:
           COUNT=${{ github.event.inputs.count_per_shard }}
           SEARCH_N=${{ github.event.inputs.search_n }}
           echo "Teacher collect: shard=$SHARD count=$COUNT search_n=$SEARCH_N ref=${{ github.event.inputs.umaai_ref }}"
-          # 每分片独立目录（无既有 manifest），--count 即本片累计采样目标，--start 默认 0
+          # 采样序号由 seed_base(常量)+index 确定性派生：各分片必须用 --start 错开区间，
+          # 否则 N 片采出 N 份相同数据。片 i 区间 = [i*COUNT, (i+1)*COUNT)
           ./target/release/ramen_teacher_collect \
+            --start $((SHARD * COUNT)) \
             --count "$COUNT" \
             --search-n "$SEARCH_N" \
             --output-dir "teacher_logs/s${SHARD}"
