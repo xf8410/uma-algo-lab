@@ -63,9 +63,18 @@ jobs:
 
       - name: Export npy (with raw)
         run: |
-          # 兼容两种解包层级：nn-*-sN/sN 或 nn-*-sN/teacher_logs/sN——用 manifest.json 定位分片目录
+          echo "--- 结构调试 ---"
+          find teacher_bins -name manifest.json | wc -l
+          find teacher_bins -maxdepth 3 -type d | head -8
+          find teacher_bins -name "*.bin" | head -3
           INPUTS=""
-          while IFS= read -r d; do INPUTS="$INPUTS --input $d"; done < <(find teacher_bins -name manifest.json -exec dirname {} \;)
+          if compgen -G "teacher_bins/*/s*/part_000000.bin" > /dev/null; then
+            for d in teacher_bins/*/s*/; do INPUTS="$INPUTS --input ${d%/}"; done
+          elif compgen -G "teacher_bins/*/teacher_logs/s*/part_000000.bin" > /dev/null; then
+            for d in teacher_bins/*/teacher_logs/s*/; do INPUTS="$INPUTS --input ${d%/}"; done
+          else
+            echo "未知目录结构，中止"; exit 1
+          fi
           N=$(echo "$INPUTS" | grep -o -- '--input' | wc -l)
           echo "分片数: $N"
           [ "$N" -lt 20 ] && echo "::warning::分片数不足 20"
