@@ -36,14 +36,40 @@ on:
         required: false
         default: 'ga_run'
       loop_minutes:
-        description: '循环分钟数（0=至少跑一轮；>0 时循环随机马+随机卡跑到时限）'
+        description: '循环分钟数（0=至少跑一轮；>0 时循环随机马+随机卡跑到时限；每分片各跑满此时长）'
         required: false
         default: '0'
+      search_n:
+        description: 'MCTS 每动作搜索次数（覆盖 game_config.toml [mcts] search_n；留空=8192 不改）'
+        required: false
+        default: ''
+      shards:
+        description: '矩阵并行分片数（1=单机；N=每片独立 seed 段，各跑满 loop_minutes）'
+        required: false
+        default: '1'
 
+# 先用 setup job 把分片数展开成动态 matrix，再并行跑 GA
 jobs:
+  setup:
+    runs-on: ubuntu-latest
+    outputs:
+      matrix: ${{ steps.mk.outputs.matrix }}
+    steps:
+      - id: mk
+        run: |
+          N=${{ github.event.inputs.shards }}
+          if [ -z "$N" ] || [ "$N" -lt 1 ]; then N=1; fi
+          if [ "$N" -gt 20 ]; then N=20; fi
+          LIST=$(python3 -c "print(list(range(int('$N'))))")
+          echo "matrix={\"shard\": $LIST}" >> $GITHUB_OUTPUT
+
   ga:
+    needs: setup
     runs-on: ubuntu-latest
     timeout-minutes: 240
+    strategy:
+      fail-fast: false
+      matrix: ${{ fromJSON(needs.setup.outputs.matrix) }}
     steps:
       - uses: actions/checkout@v4
 
@@ -59,6 +85,17 @@ jobs:
       - name: Inject umaDB
         run: cp data/umaDB.json umaai-rs/gamedata/umaDB.json
 
+      # 搜索预算：覆盖 game_config.toml 的 [mcts] search_n（E3 二万搜索用）
+      - name: Apply search_n override
+        working-directory: umaai-rs
+        run: |
+          SN="${{ github.event.inputs.search_n }}"
+          if [ -n "$SN" ]; then
+            sed -i "s/^search_n = .*/search_n = $SN/" game_config.toml
+            echo "search_n 覆盖为 $SN："
+            grep -n "^search_n" game_config.toml
+          fi
+
       - uses: dtolnay/rust-toolchain@stable
 
       - uses: Swatinem/rust-cache@v2
@@ -72,6 +109,7 @@ jobs:
       - name: Run GA optimizer
         working-directory: umaai-rs
         run: |
+          SHARD=${{ matrix.shard }}
           EXCLUDE_ARGS=""
           if [ -n "${{ github.event.inputs.exclude_chara }}" ]; then
             for c in ${{ github.event.inputs.exclude_chara }}; do
@@ -99,33 +137,35 @@ jobs:
           if [ -n "${{ github.event.inputs.elitism }}" ]; then
             ELITISM_ARGS="--elitism ${{ github.event.inputs.elitism }}"
           fi
-          echo "GA run: uma=${{ github.event.inputs.uma }} ref=${{ inputs.umaai_ref }} loop=${{ github.event.inputs.loop_minutes }}min pop=${{ github.event.inputs.pop }} gens=${{ github.event.inputs.gens }} elitism=[${{ github.event.inputs.elitism }}] seeds=[${{ github.event.inputs.seeds }}] exclude=[${{ github.event.inputs.exclude_chara }}]"
+          echo "GA run: shard=$SHARD uma=${{ github.event.inputs.uma }} ref=${{ inputs.umaai_ref }} loop=${{ github.event.inputs.loop_minutes }}min pop=${{ github.event.inputs.pop }} gens=${{ github.event.inputs.gens }} elitism=[${{ github.event.inputs.elitism }}] search_n=[${{ github.event.inputs.search_n }}] seeds=[${{ github.event.inputs.seeds }}] exclude=[${{ github.event.inputs.exclude_chara }}]"
           LOOP_MIN=${{ github.event.inputs.loop_minutes }}
           END=$((SECONDS + LOOP_MIN * 60))
           i=0
+          # 分片 seed 段：shard*10000 + i，保证各分片 GA 种子不重叠
+          BASE=$((SHARD * 10000))
           while [ $SECONDS -lt $END ] || [ $i -lt 1 ]; do
             i=$((i+1))
             RUN_UMA_ARGS="$UMA_ARGS"
             if [ "${{ github.event.inputs.uma }}" = "random" ] && [ $((i % 2)) -eq 1 ]; then
               RUN_UMA_ARGS="--uma 106301"
-              echo "===== 循环第 $i 轮（已跑 $((SECONDS/60)) 分钟）【固定】生野狄杜斯 106301（用户令：必须有）====="
+              echo "===== 分片 $SHARD 循环第 $i 轮（已跑 $((SECONDS/60)) 分钟）【固定】生野狄杜斯 106301（用户令：必须有）====="
             else
-              echo "===== 循环第 $i 轮（已跑 $((SECONDS/60)) 分钟）随机马====="
+              echo "===== 分片 $SHARD 循环第 $i 轮（已跑 $((SECONDS/60)) 分钟）随机马====="
             fi
             ./target/release/ga_optimize \
               $RUN_UMA_ARGS $EXCLUDE_ARGS \
-              --seed $i \
+              --seed $((BASE + i)) \
               --pop ${{ github.event.inputs.pop }} \
               --gens ${{ github.event.inputs.gens }} \
               $ELITISM_ARGS $SEED_GENOME_ARGS \
-              --out ga_logs/run_$i || echo "[warn] 第 $i 轮失败，继续下一轮"
+              --out ga_logs/s${SHARD}_run_$i || echo "[warn] 分片 $SHARD 第 $i 轮失败，继续下一轮"
           done
-          echo "循环结束：共 $i 轮"
+          echo "分片 $SHARD 循环结束：共 $i 轮"
 
       - name: Upload GA artifacts
         if: always()
         uses: actions/upload-artifact@v4
         with:
-          name: ga-${{ github.event.inputs.tag }}
+          name: ga-${{ github.event.inputs.tag }}-s${{ matrix.shard }}
           path: umaai-rs/ga_logs/
           retention-days: 90
