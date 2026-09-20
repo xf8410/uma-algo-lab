@@ -63,11 +63,12 @@ jobs:
 
       - name: Export npy (with raw)
         run: |
+          # 兼容两种解包层级：nn-*-sN/sN 或 nn-*-sN/teacher_logs/sN——用 manifest.json 定位分片目录
           INPUTS=""
-          for d in teacher_bins/*/teacher_logs/s*; do
-            [ -d "$d" ] && INPUTS="$INPUTS --input $d"
-          done
-          echo "分片数: $(echo "$INPUTS" | grep -o -- '--input' | wc -l)"
+          while IFS= read -r d; do INPUTS="$INPUTS --input $d"; done < <(find teacher_bins -name manifest.json -exec dirname {} \;)
+          N=$(echo "$INPUTS" | grep -o -- '--input' | wc -l)
+          echo "分片数: $N"
+          [ "$N" -lt 20 ] && echo "::warning::分片数不足 20"
           umaai-rs/target/release/ramen_export_npy $INPUTS --output-dir npy_v1 --raw
           echo "--- npy 产物 ---"
           ls -la npy_v1/
