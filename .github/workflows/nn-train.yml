@@ -39,6 +39,15 @@ jobs:
           ref: master
           path: umaai-rs
 
+      # umaDB.json（267骑）由 lab 仓 data/ 提供，与 teacher-collect / ga-optimize 同源
+      - name: Checkout lab (umaDB)
+        uses: actions/checkout@v4
+        with:
+          path: lab
+
+      - name: Inject umaDB
+        run: cp lab/data/umaDB.json umaai-rs/gamedata/umaDB.json
+
       - uses: dtolnay/rust-toolchain@stable
       - uses: Swatinem/rust-cache@v2
         with:
@@ -68,28 +77,19 @@ jobs:
           find teacher_bins -maxdepth 3 -type d | head -8
           find teacher_bins -name "*.bin" | head -3
           INPUTS=""
+          ROOT="$PWD"
+          echo "pwd=$PWD"
           if compgen -G "teacher_bins/*/s*/part_000000.bin" > /dev/null; then
-            for d in teacher_bins/*/s*/; do INPUTS="$INPUTS --input ${d%/}"; done
+            for d in "$ROOT"/teacher_bins/*/s*/; do INPUTS="$INPUTS --input ${d%/}"; done
           elif compgen -G "teacher_bins/*/teacher_logs/s*/part_000000.bin" > /dev/null; then
-            for d in teacher_bins/*/teacher_logs/s*/; do INPUTS="$INPUTS --input ${d%/}"; done
+            for d in "$ROOT"/teacher_bins/*/teacher_logs/s*/; do INPUTS="$INPUTS --input ${d%/}"; done
           else
             echo "未知目录结构，中止"; exit 1
           fi
           N=$(echo "$INPUTS" | grep -o -- '--input' | wc -l)
           echo "分片数: $N"
-          echo "--- manifest 全量诊断 ---"
-          find teacher_bins -name "manifest*" | head -25
-          ls -la teacher_bins/nn-teacher_v1-s0/ | head -6
-          ls -la teacher_bins/nn-teacher_v1-s0/s0/ | head -8
-          # 兜底：manifest 若不在 part 目录，复制过去
-          find teacher_bins -name manifest.json | while read -r m; do
-            md=$(dirname "$m")
-            pd=$(dirname "$(find "$md" -name part_000000.bin 2>/dev/null | head -1)" 2>/dev/null || true)
-            if [ -n "$pd" ] && [ "$pd" != "$md" ] && [ ! -f "$pd/manifest.json" ]; then
-              echo "补 manifest: $m -> $pd/"; cp "$m" "$pd/manifest.json"
-            fi
-          done
-          [ "$N" -lt 20 ] && echo "::warning::分片数不足 20"
+          echo "--- bash 侧可读性测试 ---"
+          head -c 120 "$ROOT/teacher_bins/nn-teacher_v1-s0/s0/manifest.json" && echo " <- bash 可读"
           umaai-rs/target/release/ramen_export_npy $INPUTS --output-dir npy_v1 --raw
           echo "--- npy 产物 ---"
           ls -la npy_v1/
