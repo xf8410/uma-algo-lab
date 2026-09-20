@@ -1,0 +1,93 @@
+name: Teacher collect
+
+on:
+  workflow_dispatch:
+    inputs:
+      umaai_ref:
+        description: '模拟器仓库 ref（分支/sha，默认 master）'
+        required: false
+        default: 'master'
+      shards:
+        description: '矩阵并行分片数（每片独立输出目录 s0..sN-1，样本序号各自从 0 起）'
+        required: false
+        default: '10'
+      count_per_shard:
+        description: '每分片采样条数（bin 的 --count，从 --start=0 起的累计目标）'
+        required: true
+      search_n:
+        description: '每候选搜索次数（教师标签需 512 列 rollout；正式采集不要低于 512）'
+        required: false
+        default: '512'
+      tag:
+        description: '产物 artifact 标签（如 teacher_smoke）'
+        required: false
+        default: 'teacher_smoke'
+
+# 先用 setup job 把分片数展开成动态 matrix，再并行采集（骨架同 ga-optimize.yml）
+jobs:
+  setup:
+    runs-on: ubuntu-latest
+    outputs:
+      matrix: ${{ steps.mk.outputs.matrix }}
+    steps:
+      - id: mk
+        run: |
+          N=${{ github.event.inputs.shards }}
+          if [ -z "$N" ] || [ "$N" -lt 1 ]; then N=1; fi
+          if [ "$N" -gt 20 ]; then N=20; fi
+          LIST=$(python3 -c "print(list(range(int('$N'))))")
+          echo "matrix={\"shard\": $LIST}" >> $GITHUB_OUTPUT
+
+  collect:
+    needs: setup
+    runs-on: ubuntu-latest
+    timeout-minutes: 240
+    strategy:
+      fail-fast: false
+      matrix: ${{ fromJSON(needs.setup.outputs.matrix) }}
+    steps:
+      - uses: actions/checkout@v4
+
+      # —— 模拟器黑盒检出（只读 fork，不触发任何 CI）——
+      - name: Checkout simulator
+        uses: actions/checkout@v4
+        with:
+          repository: xf8410/umaai-rs
+          ref: ${{ github.event.inputs.umaai_ref }}
+          path: umaai-rs
+
+      # umaDB.json（267骑）由 lab 仓 data/ 提供，与 ga-optimize 同源
+      - name: Inject umaDB
+        run: cp data/umaDB.json umaai-rs/gamedata/umaDB.json
+
+      - uses: dtolnay/rust-toolchain@stable
+
+      - uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: umaai-rs
+
+      - name: Build teacher collector
+        working-directory: umaai-rs
+        run: cargo build --release -p umasim --bin ramen_teacher_collect
+
+      - name: Run teacher collection
+        working-directory: umaai-rs
+        run: |
+          SHARD=${{ matrix.shard }}
+          COUNT=${{ github.event.inputs.count_per_shard }}
+          SEARCH_N=${{ github.event.inputs.search_n }}
+          echo "Teacher collect: shard=$SHARD count=$COUNT search_n=$SEARCH_N ref=${{ github.event.inputs.umaai_ref }}"
+          # 每分片独立目录（无既有 manifest），--count 即本片累计采样目标，--start 默认 0
+          ./target/release/ramen_teacher_collect \
+            --count "$COUNT" \
+            --search-n "$SEARCH_N" \
+            --output-dir "teacher_logs/s${SHARD}"
+
+      # bin 产物：输出目录根 manifest.json + part_000000.bin 起的分片文件
+      - name: Upload teacher artifacts
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: nn-${{ github.event.inputs.tag }}-s${{ matrix.shard }}
+          path: umaai-rs/teacher_logs/
+          retention-days: 90
