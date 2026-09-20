@@ -43,6 +43,18 @@ on:
         description: 'MCTS 每动作搜索次数（覆盖 game_config.toml [mcts] search_n；留空=8192 不改）'
         required: false
         default: ''
+      eval_trainer:
+        description: 'GA 评估训练器（recommended=手写策略|mcts=MCTS搜索；留空=recommended）'
+        required: false
+        default: ''
+      eval_search_n:
+        description: 'MCTS 评估每动作搜索次数（eval_trainer=mcts 时生效；留空=8192）'
+        required: false
+        default: ''
+      eval_stages:
+        description: 'MCTS 评估搜索阶段（all/train/ramen/special/region/super 逗号组合；留空=all）'
+        required: false
+        default: ''
       shards:
         description: '矩阵并行分片数（1=单机；N=每片独立 seed 段，各跑满 loop_minutes）'
         required: false
@@ -137,7 +149,17 @@ jobs:
           if [ -n "${{ github.event.inputs.elitism }}" ]; then
             ELITISM_ARGS="--elitism ${{ github.event.inputs.elitism }}"
           fi
-          echo "GA run: shard=$SHARD uma=${{ github.event.inputs.uma }} ref=${{ inputs.umaai_ref }} loop=${{ github.event.inputs.loop_minutes }}min pop=${{ github.event.inputs.pop }} gens=${{ github.event.inputs.gens }} elitism=[${{ github.event.inputs.elitism }}] search_n=[${{ github.event.inputs.search_n }}] seeds=[${{ github.event.inputs.seeds }}] exclude=[${{ github.event.inputs.exclude_chara }}]"
+          EVAL_ARGS=""
+          if [ -n "${{ github.event.inputs.eval_trainer }}" ]; then
+            EVAL_ARGS="$EVAL_ARGS --eval-trainer ${{ github.event.inputs.eval_trainer }}"
+          fi
+          if [ -n "${{ github.event.inputs.eval_search_n }}" ]; then
+            EVAL_ARGS="$EVAL_ARGS --eval-search-n ${{ github.event.inputs.eval_search_n }}"
+          fi
+          if [ -n "${{ github.event.inputs.eval_stages }}" ]; then
+            EVAL_ARGS="$EVAL_ARGS --eval-stages ${{ github.event.inputs.eval_stages }}"
+          fi
+          echo "GA run: shard=$SHARD uma=${{ github.event.inputs.uma }} ref=${{ inputs.umaai_ref }} loop=${{ github.event.inputs.loop_minutes }}min pop=${{ github.event.inputs.pop }} gens=${{ github.event.inputs.gens }} elitism=[${{ github.event.inputs.elitism }}] search_n=[${{ github.event.inputs.search_n }}] eval_trainer=[${{ github.event.inputs.eval_trainer }}] eval_search_n=[${{ github.event.inputs.eval_search_n }}] eval_stages=[${{ github.event.inputs.eval_stages }}] seeds=[${{ github.event.inputs.seeds }}] exclude=[${{ github.event.inputs.exclude_chara }}]"
           LOOP_MIN=${{ github.event.inputs.loop_minutes }}
           END=$((SECONDS + LOOP_MIN * 60))
           i=0
@@ -157,7 +179,7 @@ jobs:
               --seed $((BASE + i)) \
               --pop ${{ github.event.inputs.pop }} \
               --gens ${{ github.event.inputs.gens }} \
-              $ELITISM_ARGS $SEED_GENOME_ARGS \
+              $ELITISM_ARGS $SEED_GENOME_ARGS $EVAL_ARGS \
               --out ga_logs/s${SHARD}_run_$i || echo "[warn] 分片 $SHARD 第 $i 轮失败，继续下一轮"
           done
           echo "分片 $SHARD 循环结束：共 $i 轮"
