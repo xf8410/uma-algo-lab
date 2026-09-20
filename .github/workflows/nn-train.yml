@@ -1,0 +1,170 @@
+name: nn-train
+
+# 拉面 NN 教师数据训练流水线：
+#   job1: 下载教师数据 artifact → ramen_export_npy（.bin → .npy，含 raw）→ labels.py（Bayesian bootstrap 软标签）→ 上传基础 npy + labels
+#   job2: train.py（CPU）→ eval 留出指标 → export_onnx.py → 模型+指标推回本仓 saved_models/<tag>/
+# 上游设计：scripts/ramen_nn/DESIGN.md（pipeline：export_npy → labels → train → export_onnx）
+
+on:
+  workflow_dispatch:
+    inputs:
+      source_run:
+        description: '教师数据来源 run id（teacher-collect 的 run，从中下载 artifact）'
+        required: true
+      artifact_prefix:
+        description: '教师数据 artifact 名前缀'
+        required: false
+        default: 'nn-teacher_v1-'
+      tag:
+        description: '产物 tag（模型目录名，如 ramen_v1）'
+        required: true
+      epochs:
+        description: '训练轮数上限（早停 patience 内会提前停）'
+        required: false
+        default: '200'
+      batch_size:
+        description: 'batch size'
+        required: false
+        default: '1024'
+
+jobs:
+  convert-label:
+    runs-on: ubuntu-latest
+    timeout-minutes: 120
+    steps:
+      - name: Checkout fork (umaai-rs)
+        uses: actions/checkout@v4
+        with:
+          repository: xf8410/umaai-rs
+          ref: master
+          path: umaai-rs
+
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: umaai-rs
+
+      - name: Build ramen_export_npy
+        working-directory: umaai-rs
+        run: cargo build --release -p umasim --bin ramen_export_npy
+
+      - name: Download teacher data artifacts
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          mkdir -p teacher_bins
+          gh run download "${{ inputs.source_run }}" \
+            -R xf8410/uma-algo-lab \
+            -p "${{ inputs.artifact_prefix }}*" \
+            -D teacher_bins
+          echo "--- 下载到的分片 ---"
+          ls teacher_bins | head -25
+          ls teacher_bins | wc -l
+
+      - name: Export npy (with raw)
+        run: |
+          INPUTS=""
+          for d in teacher_bins/*/teacher_logs/s*; do
+            [ -d "$d" ] && INPUTS="$INPUTS --input $d"
+          done
+          echo "分片数: $(echo "$INPUTS" | grep -o -- '--input' | wc -l)"
+          umaai-rs/target/release/ramen_export_npy $INPUTS --output-dir npy_v1 --raw
+          echo "--- npy 产物 ---"
+          ls -la npy_v1/
+
+      - name: Setup Python (numpy)
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+
+      - name: Generate labels
+        run: |
+          python -m pip install -q numpy
+          python umaai-rs/scripts/ramen_nn/labels.py \
+            --input npy_v1 \
+            --output labels_v1 \
+            --overwrite
+          echo "--- labels 产物 ---"
+          ls -la labels_v1/
+
+      - name: Upload npy + labels
+        uses: actions/upload-artifact@v4
+        with:
+          name: nn-input-${{ inputs.tag }}
+          path: |
+            npy_v1
+            labels_v1
+          retention-days: 14
+
+  train-export:
+    needs: convert-label
+    runs-on: ubuntu-latest
+    timeout-minutes: 350
+    steps:
+      - name: Checkout fork (umaai-rs)
+        uses: actions/checkout@v4
+        with:
+          repository: xf8410/umaai-rs
+          ref: master
+          path: umaai-rs
+
+      - name: Download npy + labels
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          gh run download "${{ github.run_id }}" \
+            -R xf8410/uma-algo-lab \
+            -n "nn-input-${{ inputs.tag }}" \
+            -D nn_input
+          ls nn_input/
+
+      - name: Setup Python (torch cpu + onnx)
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+
+      - name: Install deps
+        run: |
+          python -m pip install -q --upgrade pip
+          python -m pip install -q torch --index-url https://download.pytorch.org/whl/cpu
+          python -m pip install -q onnx onnxruntime numpy
+
+      - name: Train
+        run: |
+          python umaai-rs/scripts/ramen_nn/train.py \
+            --data nn_input/npy_v1 \
+            --labels nn_input/labels_v1 \
+            --output-dir "saved_models/${{ inputs.tag }}" \
+            --device cpu \
+            --epochs "${{ inputs.epochs }}" \
+            --batch-size "${{ inputs.batch_size }}" 2>&1 | tee train_log.txt
+          echo "--- 模型目录 ---"
+          ls -la "saved_models/${{ inputs.tag }}"
+
+      - name: Export ONNX
+        run: |
+          python umaai-rs/scripts/ramen_nn/export_onnx.py \
+            --checkpoint "saved_models/${{ inputs.tag }}/best.pt" \
+            --output "saved_models/${{ inputs.tag }}/model.onnx"
+
+      - name: Commit model to repo
+        run: |
+          git clone -q "https://x-access-token:${{ github.token }}@github.com/xf8410/uma-algo-lab.git" repo_push
+          mkdir -p "repo_push/saved_models/${{ inputs.tag }}"
+          cp "saved_models/${{ inputs.tag }}/model.onnx" "repo_push/saved_models/${{ inputs.tag }}/"
+          cp "saved_models/${{ inputs.tag }}"/*.json "repo_push/saved_models/${{ inputs.tag }}/" 2>/dev/null || true
+          cp "saved_models/${{ inputs.tag }}/metrics.jsonl" "repo_push/saved_models/${{ inputs.tag }}/" 2>/dev/null || true
+          cp train_log.txt "repo_push/saved_models/${{ inputs.tag }}/"
+          cd repo_push
+          git config user.name "lab-bot"
+          git config user.email "lab-bot@users.noreply.github.com"
+          git add "saved_models/${{ inputs.tag }}"
+          git commit -m "nn: 训练产物 ${{ inputs.tag }}（run ${{ github.run_id }}）" || echo "无变更"
+          git push origin main
+
+      - name: Upload model artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: nn-model-${{ inputs.tag }}
+          path: saved_models/${{ inputs.tag }}
+          retention-days: 30
