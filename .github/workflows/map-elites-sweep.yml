@@ -1,0 +1,79 @@
+name: MAP-Elites sweep
+
+on:
+  workflow_dispatch:
+    inputs:
+      budget:
+        description: "MAP-Elites 评估次数（与 CMA-ES 同口径可比）"
+        default: "60"
+      uma:
+        description: "马娘 gameId"
+        default: "111501"
+      umaai_ref:
+        description: "模拟器仓库 ref（分支/tag，默认 master）"
+        default: "master"
+  push:
+    paths:
+      - "lab/space.py"
+      - "lab/genome.py"
+      - "optimizers/map_elites_opt.py"
+      - "experiments/map_elites.py"
+      - ".github/workflows/map-elites-sweep.yml"
+
+jobs:
+  map_elites:
+    runs-on: ubuntu-latest
+    # smoke 1 seed × 100 局 × 3 builds = 300 局/eval；
+    # budget=60 eval → 18000 局；+换种子验收 900 局 ≈ ~20-30 min
+    timeout-minutes: 90
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Checkout simulator
+        uses: actions/checkout@v4
+        with:
+          repository: xf8410/umaai-rs
+          ref: ${{ github.event.inputs.umaai_ref || 'master' }}
+          path: umaai-rs
+          token: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Cache cargo
+        uses: actions/cache@v4
+        with:
+          path: |
+            ~/.cargo/registry
+            ~/.cargo/git
+            umaai-rs/target
+          key: cargo-mape-${{ runner.os }}-${{ hashFiles('umaai-rs/Cargo.lock') }}
+          restore-keys: cargo-mape-${{ runner.os }}-
+
+      - name: Build bench_base
+        working-directory: umaai-rs
+        run: cargo build --release --bin bench_base
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+          cache: pip
+      - run: pip install -r requirements.txt
+
+      - name: Space self-check
+        run: python lab/space.py
+
+      - name: Run MAP-Elites
+        env:
+          UMA_BENCH_BIN: ${{ github.workspace }}/umaai-rs/target/release/bench_base
+        run: |
+          python experiments/map_elites.py \
+            --budget "${{ github.event.inputs.budget || '60' }}" \
+            --uma "${{ github.event.inputs.uma || '111501' }}" \
+            --center-toml seeds/center_r8.toml \
+            --out results/
+
+      - name: Upload results
+        uses: actions/upload-artifact@v4
+        with:
+          name: mape-results-${{ github.run_id }}
+          path: |
+            results/
+            umaai-rs/logs/
