@@ -1,0 +1,82 @@
+name: CVaR sweep
+
+on:
+  workflow_dispatch:
+    inputs:
+      optimizers:
+        description: "优化器（逗号分隔: cmaes,cem；CVaR 比 mean 慢 5x）"
+        default: "cmaes,cem"
+      budget:
+        description: "每优化器评估次数上限"
+        default: "20"
+      uma:
+        description: "马娘 gameId"
+        default: "111501"
+      umaai_ref:
+        description: "模拟器仓库 ref（分支/tag，默认 master）"
+        default: "master"
+  push:
+    paths:
+      - "lab/evaluator.py"
+      - "experiments/cvar_compare.py"
+      - ".github/workflows/cv-ar-sweep.yml"
+
+jobs:
+  cvar:
+    runs-on: ubuntu-latest
+    # CVaR 5 seeds × 100 局 × 3 builds = 1500 局/次评估；
+    # budget=20 × 2 optimizers × 2 modes = 120 万局上限
+    timeout-minutes: 180
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Checkout simulator
+        uses: actions/checkout@v4
+        with:
+          repository: xf8410/umaai-rs
+          ref: ${{ github.event.inputs.umaai_ref || 'master' }}
+          path: umaai-rs
+          token: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Cache cargo
+        uses: actions/cache@v4
+        with:
+          path: |
+            ~/.cargo/registry
+            ~/.cargo/git
+            umaai-rs/target
+          key: cargo-cvar-${{ runner.os }}-${{ hashFiles('umaai-rs/Cargo.lock') }}
+          restore-keys: cargo-cvar-${{ runner.os }}-
+
+      - name: Build bench_base
+        working-directory: umaai-rs
+        run: cargo build --release --bin bench_base
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+          cache: pip
+      - run: pip install -r requirements.txt
+
+      - name: Space self-check
+        run: python lab/space.py
+
+      - name: Run CVaR vs Mean horse race
+        env:
+          UMA_BENCH_BIN: ${{ github.workspace }}/umaai-rs/target/release/bench_base
+        run: |
+          python experiments/cvar_compare.py \
+            --optimizers "${{ github.event.inputs.optimizers || 'cmaes,cem' }}" \
+            --budget "${{ github.event.inputs.budget || '20' }}" \
+            --uma "${{ github.event.inputs.uma || '111501' }}" \
+            --modes "mean,cvar" \
+            --center-toml seeds/center_r8.toml \
+            --out results/
+
+      - name: Upload results
+        uses: actions/upload-artifact@v4
+        with:
+          name: cvar-results-${{ github.run_id }}
+          path: |
+            results/
+            umaai-rs/logs/
