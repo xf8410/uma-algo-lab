@@ -70,7 +70,10 @@ class MapElitesOptimizer(Optimizer):
             self._explore_count += 1
         else:
             # 突变：从 archive 随机 cell 加小 noise（精修该行为区域）
-            cell = self.rng.choice(list(self.archive.keys()))
+            # 注：self.rng.choice(tuple_list) 会返回 ndarray，不能当 dict key。
+            #     用 integers 拿索引再 list 取 key，确保拿到原生 tuple。
+            keys = list(self.archive.keys())
+            cell = keys[int(self.rng.integers(0, len(keys)))]
             _, base_x = self.archive[cell]
             x = np.asarray(base_x, dtype=float) + self.rng.normal(
                 0, self.mutation_rate, self.dim)
