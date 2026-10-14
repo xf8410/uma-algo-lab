@@ -1,0 +1,76 @@
+name: playbook-warmstart
+
+on:
+  workflow_dispatch:
+    inputs:
+      n_iter:
+        description: "每组 CMA-ES 跑多少轮"
+        default: "30"
+      seed:
+        description: "随机种子（CRN 配对共用）"
+        default: "7"
+      uma:
+        description: "马娘 gameId"
+        default: "111501"
+  push:
+    paths: ["lab/playbook_io.py", "experiments/playbook_warmstart_compare.py", "playbook/notes/**", ".github/workflows/playbook-warmstart.yml"]
+
+jobs:
+  compare:
+    runs-on: ubuntu-latest
+    timeout-minutes: 60
+    steps:
+      - uses: actions/checkout@v4
+
+      # —— 编译模拟器基准工具（黑盒，不改动）——
+      - name: Checkout simulator
+        uses: actions/checkout@v4
+        with:
+          repository: xf8410/umaai-rs
+          ref: master
+          path: umaai-rs
+          token: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Cache cargo
+        uses: actions/cache@v4
+        with:
+          path: |
+            ~/.cargo/registry
+            ~/.cargo/git
+            umaai-rs/target
+          key: cargo-umalab-${{ runner.os }}-${{ hashFiles('umaai-rs/Cargo.lock') }}
+          restore-keys: cargo-umalab-${{ runner.os }}-
+
+      - name: Build bench_base
+        working-directory: umaai-rs
+        run: cargo build --release --bin bench_base
+
+      # —— Python 实验室 ——
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+          cache: pip
+      - run: pip install -r requirements.txt
+      - run: pip install cmaes
+
+      - name: Self-check playbook_io
+        run: python -m lab.playbook_io --dir playbook/notes --priority medium
+
+      - name: Run warm-start vs 裸启 对比
+        env:
+          UMA_BENCH_BIN: ${{ github.workspace }}/umaai-rs/target/release/bench_base
+          PYTHONUNBUFFERED: 1
+        run: |
+          python experiments/playbook_warmstart_compare.py \
+            --n-iter "${{ github.event.inputs.n_iter || '30' }}" \
+            --seed "${{ github.event.inputs.seed || '7' }}" \
+            --uma "${{ github.event.inputs.uma || '111501' }}"
+
+      - name: Upload report
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: warmstart-compare-${{ github.run_id }}
+          path: |
+            experiments/warmstart_compare_report.md
+            experiments/warmstart_compare_result.json
