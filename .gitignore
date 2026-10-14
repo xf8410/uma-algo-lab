@@ -1,6 +1,4 @@
+experiments/*_report.md
+results/
 __pycache__/
 *.pyc
-results/
-replay/*
-!replay/genome_top1.toml
-.cache/

@@ -1,0 +1,48 @@
+name: playbook-demo
+
+on:
+  workflow_dispatch:
+    inputs:
+      n_iter:
+        description: "warm-start 跑多少轮 dummy eval"
+        default: "30"
+      seed:
+        description: "随机种子"
+        default: "7"
+  push:
+    paths: ["lab/playbook_io.py", "experiments/playbook_demo.py", "playbook/**", ".github/workflows/playbook-demo.yml"]
+
+jobs:
+  demo:
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+          cache: pip
+
+      - name: Install deps
+        run: |
+          pip install -r requirements.txt
+          pip install cmaes
+
+      - name: Self-check playbook_io
+        run: |
+          python -m lab.playbook_io --dir playbook/notes --priority medium
+
+      - name: Run playbook demo
+        env:
+          PYTHONUNBUFFERED: 1
+        run: |
+          python experiments/playbook_demo.py
+
+      - name: Upload demo report
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: playbook-demo-${{ github.run_id }}
+          path: |
+            experiments/playbook_demo_report.md
