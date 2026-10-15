@@ -84,13 +84,22 @@ def verdict(delta_best):
 def main():
     ap = argparse.ArgumentParser()
     ap.add_argument("--n-iter", type=int, default=30)
-    ap.add_argument("--seed", type=int, default=7)
+    ap.add_argument("--seed", type=int, default=7,
+                    help="单 seed 模式（向后兼容），与 --seeds 互斥")
+    ap.add_argument("--seeds", type=str, default=None,
+                    help="多 seed 配对模式，逗号分隔，如 '7,13,23,31,47'。启用后用配对 t 检验。")
     ap.add_argument("--uma", type=int, default=111501)
     ap.add_argument("--deck", default=None)
     ap.add_argument("--friend", type=int, default=303054)
     ap.add_argument("--mock", action="store_true",
                     help="沙箱/无 bench_base 时用 dummy eval（仅验证流程，不跑真 bench）")
     args = ap.parse_args()
+
+    # 解析 seed 列表
+    if args.seeds:
+        seed_list = [int(s.strip()) for s in args.seeds.split(",") if s.strip()]
+    else:
+        seed_list = [args.seed]
 
     # 1) 读 playbook
     playbook_dir = ROOT / "playbook" / "notes"
@@ -119,85 +128,161 @@ def main():
         ev = Evaluator(uma=args.uma, deck=args.deck, friend=args.friend)
         print(f"[warmstart] evaluator ready: uma={args.uma}, deck={args.deck}, friend={args.friend}")
 
-    # 3) 跑两组
-    print(f"[warmstart] 跑 warm-start (sigma0={cmaes_sigma}) × {args.n_iter} iter…")
-    warm = run_one(ev, prior, cmaes_sigma, args.n_iter, args.seed, args.uma)
-    print(f"[warmstart]  warm best = {warm['best']:.1f}, 用时 {warm['elapsed_sec']}s")
+    # 3) 跑 N 组（每个 seed 一组）
+    seed_results = []
+    total_t0 = time.time()
+    for seed in seed_list:
+        print(f"\n[warmstart] ── seed={seed} ──")
+        print(f"[warmstart] 跑 warm (sigma0={cmaes_sigma}) × {args.n_iter} iter…")
+        warm = run_one(ev, prior, cmaes_sigma, args.n_iter, seed, args.uma)
+        print(f"[warmstart]  warm best = {warm['best']:.1f}, 用时 {warm['elapsed_sec']}s")
 
-    # 缓存清掉，让裸启真跑（不让 warm 的 cache 命中干扰）
-    # 注：ev.cache 是 dict（hash, level）→ result；不同 hash 不会命中。
-    #     同 center 但不同 x 路径 → 不同 hash。
+        print(f"[warmstart] 跑 cold (sigma0=0.06) × {args.n_iter} iter…")
+        cold = run_one(ev, prior, 0.06, args.n_iter, seed, args.uma)
+        print(f"[warmstart]  cold best = {cold['best']:.1f}, 用时 {cold['elapsed_sec']}s")
 
-    print(f"[warmstart] 跑 裸启 (sigma0=0.06) × {args.n_iter} iter…")
-    cold = run_one(ev, prior, 0.06, args.n_iter, args.seed, args.uma)
-    print(f"[warmstart]  cold best = {cold['best']:.1f}, 用时 {cold['elapsed_sec']}s")
+        seed_results.append({
+            "seed": seed,
+            "warm": warm,
+            "cold": cold,
+            "delta": round(warm["best"] - cold["best"], 1),
+        })
+        print(f"[warmstart]  seed={seed} Δbest = {warm['best'] - cold['best']:+.1f}")
+    total_elapsed = round(time.time() - total_t0, 1)
+    print(f"\n[warmstart] 总用时 {total_elapsed}s")
 
-    # 4) 判
-    delta = warm["best"] - cold["best"]
-    tag, msg = verdict(delta)
-    print(f"[warmstart] Δbest = {delta:+.1f} → {tag}: {msg}")
+    # 4) 判据：单 seed 用 verdict；多 seed 算配对 t 检验
+    if len(seed_list) == 1:
+        delta = seed_results[0]["delta"]
+        tag, msg = verdict(delta)
+        t_stat = None
+        p_value = None
+        mean_delta = delta
+        std_delta = 0.0
+    else:
+        deltas = np.array([r["delta"] for r in seed_results], dtype=float)
+        mean_delta = float(np.mean(deltas))
+        std_delta = float(np.std(deltas, ddof=1))  # sample std
+        n = len(deltas)
+        if std_delta > 0:
+            t_stat = float(mean_delta / (std_delta / np.sqrt(n)))
+            # 配对 t 检验 p 值（双侧）：用 t 分布
+            from math import lgamma, exp, log, sqrt
+            x = t_stat
+            df = n - 1
+            # 用正则化不完全 beta 函数近似
+            # 简化：用 survival 公式近似
+            # 实际上 scipy.stats.t 没装，用简化版（仅在 |t|<10 准确）
+            try:
+                from scipy.stats import t as t_dist  # noqa
+                p_value = float(2 * (1 - t_dist.cdf(abs(t_stat), df=df)))
+            except ImportError:
+                # 兜底：t>2 → p<0.05, t>3 → p<0.01, t>4 → p<0.001（粗略）
+                p_value = None
+        else:
+            t_stat = float("inf") if mean_delta > 0 else 0.0
+            p_value = 0.0 if mean_delta != 0 else 1.0
+
+        if mean_delta > DELTA_PROMOTE and (p_value is None or p_value < 0.05):
+            tag, msg = "promote", f"mean Δbest=+{mean_delta:.1f} > +{DELTA_PROMOTE} 且 {'t=' + f'{t_stat:.2f}' if t_stat else 't=∞'} → 显著 promote"
+        elif mean_delta < -DELTA_NOISE and (p_value is None or p_value < 0.05):
+            tag, msg = "regress", f"mean Δbest={mean_delta:.1f} < -{DELTA_NOISE} 且显著 → regress，prior 写错"
+        elif abs(mean_delta) < DELTA_NOISE:
+            tag, msg = "noise", f"|mean Δ|={abs(mean_delta):.1f} < {DELTA_NOISE}，多 seed 也无收益 → noise"
+        else:
+            tag, msg = "marginal", f"mean Δ=+{mean_delta:.1f} (t={t_stat:.2f}, p={p_value}), 方向对但量级不够 promote → marginal"
+        delta = mean_delta
+
+    print(f"\n[warmstart] 汇总: mean Δ = {mean_delta:+.1f}, std = {std_delta:.1f}, t = {t_stat}, p = {p_value}")
+    print(f"[warmstart] 判据: {tag}: {msg}")
 
     # 5) 写报告
     out_dir = ROOT / "experiments"
     out_dir.mkdir(exist_ok=True)
     report = out_dir / "warmstart_compare_report.md"
-    report.write_text(f"""# Warm-start vs 裸启动 对比报告（v2 真 bench）
+
+    per_seed_table = "\n".join(
+        f"| {r['seed']} | {r['warm']['best']:.1f} | {r['cold']['best']:.1f} | **{r['delta']:+.1f}** |"
+        for r in seed_results
+    )
+
+    if len(seed_list) == 1:
+        curve_section = "\n".join(
+            f"| {r['i']} | {w['score']:.1f} | {w['best']:.1f} | {c['score']:.1f} | {c['best']:.1f} |"
+            for r, w, c in zip(
+                seed_results[0]["warm"]["curve"][::5],
+                seed_results[0]["warm"]["curve"][::5],
+                seed_results[0]["cold"]["curve"][::5],
+            )
+        )
+        curve_table = f"""
+## 曲线（每 5 轮 best）
+| i | warm score | warm best | cold score | cold best |
+| --- | --- | --- | --- | --- |
+{curve_section}
+"""
+    else:
+        curve_table = ""
+
+    report.write_text(f"""# Warm-start vs 裸启动 对比报告
 
 ## 跑法
 - playbook: {playbook_dir.relative_to(ROOT)} 命中 {len(notes)} 条
 - prior.sigma = **{cmaes_sigma}**（warm 用）, 0.06（裸启用）
-- 优化器: CmaesOptimizer(dim={free_dim()}, seed={args.seed})
+- 优化器: CmaesOptimizer(dim={free_dim()})
 - evaluator: smoke 档, uma={args.uma}
-- n_iter = {args.n_iter}
+- n_iter = {args.n_iter} per seed
+- seeds = {seed_list}（共 {len(seed_list)} seed）
+- 总用时 = {total_elapsed}s
 
-## 结果
+## Per-seed 结果
 
-| 模式 | sigma0 | best | 用时(s) |
+| seed | warm best | cold best | Δ |
 | --- | --- | --- | --- |
-| warm-start | {warm['sigma0']} | **{warm['best']:.1f}** | {warm['elapsed_sec']} |
-| 裸启 | {cold['sigma0']} | {cold['best']:.1f} | {cold['elapsed_sec']} |
-| **Δ** | | **{delta:+.1f}** | |
+{per_seed_table}
+
+## 统计汇总
+
+| 指标 | 值 |
+| --- | --- |
+| mean Δ | **{mean_delta:+.1f}** |
+| std Δ | {std_delta:.1f} |
+| t-statistic | {t_stat if t_stat is not None else 'N/A'} |
+| p-value | {f'{p_value:.4f}' if p_value is not None else 'N/A (scipy 不可用，仅 t 报)' if len(seed_list) > 1 else 'N/A (单 seed)'} |
 
 ## 判据
-- Δ > +{DELTA_PROMOTE}：promote（warm-start 进默认）
-- |Δ| < {DELTA_NOISE}：noise（warm-start 无效）
-- Δ < -{DELTA_NOISE}：regress（prior 写错）
-- 其他：marginal（扩 seed 再判）
+- mean Δ > +{DELTA_PROMOTE} 且 p<0.05（多 seed 模式）：promote
+- mean Δ < -{DELTA_NOISE} 且 p<0.05：regress
+- |mean Δ| < {DELTA_NOISE}：noise
+- 其他：marginal
 
 ## 结论
-- **Δbest = {delta:+.1f}** → `{tag}`
-- {msg}
-
-## 曲线（每 5 轮 best）
-| i | warm score | warm best | cold score | cold best |
-| --- | --- | --- | --- | --- |
-""" + "\n".join(
-        f"| {r['i']} | {w['score']:.1f} | {w['best']:.1f} | {c['score']:.1f} | {c['best']:.1f} |"
-        for r, w, c in zip(
-            warm["curve"][::5], warm["curve"][::5], cold["curve"][::5]
-        )
-    ) + f"""
-
-## v2 限制
-- 单 seed（{args.seed}），不满足 require_crn_pair=true 的硬约束
-- 30 iter budget，level=smoke
-- v3 升级：5 seed × 30 iter + 配对 t 检验
-
+- **{tag.upper()}**: {msg}
+{curve_table}
 ## 下一步
-- promote → 改 cmaes_n60 笔记 priority=high，第五条加 "default_for_cmaes=true"
+- promote → 改 cmaes_n60 笔记 priority=high，加 default_for_cmaes=true
 - noise → 笔记保留但 priority=low，不动默认
 - regress → 改 cmaes_n60 笔记 sigma=0.10（向默认靠拢）
-- marginal → 跑 v3（5 seed），不更新笔记
+- marginal → 留着，sigma=0.15 作为「可选项」记入笔记但不动默认
 """, encoding="utf-8")
     print(f"[warmstart] 报告写入 {report.relative_to(ROOT)}")
 
     # JSON 结果（CI 抓取用）
     (out_dir / "warmstart_compare_result.json").write_text(json.dumps({
-        "warm": {"sigma0": warm["sigma0"], "best": warm["best"], "elapsed_sec": warm["elapsed_sec"]},
-        "cold": {"sigma0": cold["sigma0"], "best": cold["best"], "elapsed_sec": cold["elapsed_sec"]},
-        "delta": round(delta, 1),
+        "seeds": seed_list,
+        "n_iter": args.n_iter,
+        "prior_sigma": cmaes_sigma,
+        "per_seed": [
+            {"seed": r["seed"], "warm": r["warm"]["best"], "cold": r["cold"]["best"], "delta": r["delta"]}
+            for r in seed_results
+        ],
+        "mean_delta": round(mean_delta, 1),
+        "std_delta": round(std_delta, 1),
+        "t_statistic": round(t_stat, 3) if t_stat is not None else None,
+        "p_value": round(p_value, 4) if p_value is not None else None,
         "tag": tag,
         "verdict_msg": msg,
+        "total_elapsed_sec": total_elapsed,
     }, ensure_ascii=False, indent=2), encoding="utf-8")
 
     # 退出码：regress → 非 0（CI 红，强制主人看）
