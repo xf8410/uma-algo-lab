@@ -1,0 +1,80 @@
+name: sa-compare
+
+on:
+  workflow_dispatch:
+    inputs:
+      n_iter:
+        description: "每 (algo × seed) 跑多少轮"
+        default: "30"
+      seeds:
+        description: "CRN 配对种子，逗号分隔"
+        default: "7,13,23,31,47"
+      algos:
+        description: "对比算法，逗号分隔（必须都在 REGISTRY）"
+        default: "sa,cmaes,tpe,cem"
+      uma:
+        description: "马娘 gameId"
+        default: "111501"
+  push:
+    paths: ["optimizers/sa_opt.py", "experiments/sa_compare.py", ".github/workflows/sa-compare.yml"]
+
+jobs:
+  compare:
+    runs-on: ubuntu-latest
+    timeout-minutes: 180
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Checkout simulator
+        uses: actions/checkout@v4
+        with:
+          repository: xf8410/umaai-rs
+          ref: master
+          path: umaai-rs
+          token: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Cache cargo
+        uses: actions/cache@v4
+        with:
+          path: |
+            ~/.cargo/registry
+            ~/.cargo/git
+            umaai-rs/target
+          key: cargo-umalab-${{ runner.os }}-${{ hashFiles('umaai-rs/Cargo.lock') }}
+          restore-keys: cargo-umalab-${{ runner.os }}-
+
+      - name: Build bench_base
+        working-directory: umaai-rs
+        run: cargo build --release --bin bench_base
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+          cache: pip
+
+      - run: pip install -r requirements.txt
+      - run: pip install cmaes
+
+      - name: Run SA compare
+        env:
+          UMA_BENCH_BIN: ${{ github.workspace }}/umaai-rs/target/release/bench_base
+          PYTHONUNBUFFERED: 1
+        run: |
+          ALGOS="${{ github.event.inputs.algos || 'sa,cmaes,tpe,cem' }}"
+          SEEDS="${{ github.event.inputs.seeds || '7,13,23,31,47' }}"
+          NITER="${{ github.event.inputs.n_iter || '30' }}"
+          UMA="${{ github.event.inputs.uma || '111501' }}"
+          python experiments/sa_compare.py \
+            --algos "$ALGOS" \
+            --n-iter "$NITER" \
+            --seeds "$SEEDS" \
+            --uma "$UMA"
+
+      - name: Upload report
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: sa-compare-${{ github.run_id }}
+          path: |
+            experiments/sa_compare_report.md
+            experiments/sa_compare_result.json
