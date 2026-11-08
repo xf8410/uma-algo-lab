@@ -1,6 +1,4 @@
 experiments/*_report.md
-experiments/*_result.json
 results/
 __pycache__/
 *.pyc
-.venv/
